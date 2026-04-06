@@ -1,0 +1,8 @@
+{
+  "name": "Soviet Boxing Science",
+  "description": "La Science de la Victoire - Laboratoire technique et théorique de l'école de boxe soviétique.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}

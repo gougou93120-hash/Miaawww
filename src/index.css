@@ -1,0 +1,119 @@
+@import url('https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --font-display: "Anton", sans-serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-soviet-red: #ff0000;
+  --color-soviet-dark: #0a0a0a;
+  --color-soviet-gray: #1a1a1a;
+  --color-soviet-light: #e0e0e0;
+}
+
+@layer base {
+  body {
+    @apply bg-soviet-dark text-soviet-light font-sans antialiased selection:bg-soviet-red selection:text-white;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-display uppercase tracking-tighter italic;
+  }
+}
+
+@layer components {
+  .brutalist-border {
+    border-width: 2px;
+    border-color: var(--color-soviet-light);
+    box-shadow: 4px 4px 0px 0px rgba(255,255,255,0.1);
+  }
+
+  .soviet-card {
+    background-color: var(--color-soviet-gray);
+    border-width: 2px;
+    border-color: var(--color-soviet-light);
+    box-shadow: 4px 4px 0px 0px rgba(255,255,255,0.1);
+    padding: 1.5rem;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .soviet-card:hover {
+    box-shadow: 8px 8px 0px 0px rgba(255,0,0,0.3);
+    transform: translate(-4px, -4px);
+  }
+
+  .soviet-button {
+    padding: 0.75rem 1.5rem;
+    font-family: var(--font-display);
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    transition: all 0.2s ease;
+  }
+
+  .soviet-button:active {
+    transform: translateY(4px);
+    box-shadow: none;
+  }
+
+  .soviet-button-primary {
+    background-color: var(--color-soviet-red);
+    color: white;
+    box-shadow: 4px 4px 0px 0px rgba(255,255,255,0.2);
+  }
+
+  .soviet-button-primary:hover {
+    background-color: white;
+    color: var(--color-soviet-red);
+  }
+
+  .soviet-button-secondary {
+    background-color: transparent;
+    border-width: 2px;
+    border-color: var(--color-soviet-light);
+    color: var(--color-soviet-light);
+    box-shadow: 4px 4px 0px 0px rgba(255,255,255,0.1);
+  }
+
+  .soviet-button-secondary:hover {
+    background-color: var(--color-soviet-light);
+    color: var(--color-soviet-dark);
+  }
+
+  .markdown-body {
+    @apply prose max-w-none;
+    @apply prose-headings:font-display prose-headings:uppercase prose-headings:italic prose-headings:tracking-tighter;
+    @apply prose-p:leading-relaxed;
+    @apply prose-strong:text-soviet-red prose-strong:font-black;
+    @apply prose-blockquote:border-l-4 prose-blockquote:border-soviet-red prose-blockquote:bg-soviet-red/5 prose-blockquote:p-4 prose-blockquote:italic;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar {
+    @apply w-1;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-track {
+    @apply bg-soviet-dark;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    @apply bg-soviet-red;
+  }
+}
+
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+
+.scanline-container {
+  @apply absolute inset-0 pointer-events-none overflow-hidden z-50;
+}
+
+.scanline-container::after {
+  content: "";
+  @apply absolute inset-0 bg-gradient-to-b from-transparent via-soviet-red/5 to-transparent h-20 w-full;
+  animation: scanline 8s linear infinite;
+}
