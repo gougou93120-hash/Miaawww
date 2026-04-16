@@ -294,7 +294,25 @@ export default function App() {
   // --- Handlers ---
 
   const handleLogin = async () => {
-    try { await signInWithPopup(auth, googleProvider); } catch (e) { console.error(e); }
+    setError(null);
+    try { 
+      await signInWithPopup(auth, googleProvider); 
+    } catch (e: any) { 
+      console.error(e);
+      let errorMsg = "Erreur de connexion.";
+      if (e.code === 'auth/popup-blocked') {
+        errorMsg = "Le popup de connexion a été bloqué par votre navigateur. Veuillez autoriser les popups pour ce site.";
+      } else if (e.code === 'auth/unauthorized-domain') {
+        errorMsg = `Ce domaine (${window.location.hostname}) n'est pas autorisé dans la console Firebase. Veuillez l'ajouter aux 'Domaines autorisés' dans Authentication > Settings.`;
+      } else if (e.code === 'auth/operation-not-allowed') {
+        errorMsg = "La connexion Google n'est pas activée dans votre console Firebase. Activez-la dans Authentication > Sign-in method.";
+      } else if (e.code === 'auth/popup-closed-by-user') {
+        errorMsg = "Connexion annulée.";
+      } else if (e.message) {
+        errorMsg = `Erreur: ${e.message}`;
+      }
+      setError(errorMsg);
+    }
   };
 
   const handleLogout = async () => {
@@ -387,7 +405,7 @@ export default function App() {
     const performAnalysis = async () => {
       try {
         const ai = new GoogleGenAI({ apiKey });
-        const modelName = "gemini-3-flash-preview";
+        const modelName = "gemini-1.5-flash";
 
         const userVideoBase64 = await fileToBase64(userVideoFile);
         const refVideoBase64 = await fileToBase64(refVideoFile);
@@ -507,21 +525,26 @@ export default function App() {
         
         setQuotaExceeded(false);
       } catch (err: any) {
-        addLog(`ERREUR IA: ${err.message?.substring(0, 30)}...`);
+        const msg = err.message || "";
+        addLog(`ERREUR IA: ${msg.substring(0, 30)}...`);
+        
         attempt++;
-        if (attempt < maxRetries && !err.message?.includes("API key")) {
-          console.log(`Tentative ${attempt} échouée, nouvel essai...`);
-          await new Promise(resolve => setTimeout(resolve, 2000));
+        // Retry on 503 (Overloaded) or 429 (Rate Limit)
+        if (attempt < maxRetries && (msg.includes("503") || msg.includes("429") || msg.includes("overloaded") || msg.includes("demand"))) {
+          const delay = Math.pow(2, attempt) * 2000; // 2s, 4s, 8s
+          addLog(`Surcharge détectée. Nouvel essai dans ${delay/1000}s...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
           return performAnalysis();
         }
 
-        const msg = err.message || "";
         if (msg.includes("API key") || msg.includes("Requested entity was not found")) {
           setError("Clé API invalide ou expirée. Veuillez la reconfigurer.");
           setHasApiKey(false);
         } else if (msg.includes("429") || msg.includes("Quota") || msg.includes("limit")) {
           setQuotaExceeded(true);
-          setError("Limite de requêtes atteinte (Quota). Veuillez patienter quelques minutes.");
+          setError("Limite de requêtes atteinte (Quota). L'IA est très sollicitée, réessayez dans une minute.");
+        } else if (msg.includes("503") || msg.includes("overloaded") || msg.includes("demand")) {
+          setError("Le serveur est surchargé (Erreur 503). Trop de demandes simultanées de la communauté. Réessayez dans quelques instants.");
         } else {
           setError(err.message || t.errorGeneric);
         }
@@ -550,7 +573,7 @@ export default function App() {
       const ai = new GoogleGenAI({ apiKey });
       if (!chatRef.current) {
         chatRef.current = ai.chats.create({
-          model: "gemini-3-flash-preview",
+          model: "gemini-1.5-flash",
           config: {
             systemInstruction: `Tu es un expert en boxe de l'école soviétique. Analyse précédente : "${analysisResult}". Réponds de manière technique et encourageante.`,
           },
@@ -766,6 +789,38 @@ export default function App() {
           </header>
 
           <div className="flex-1 overflow-y-auto p-4 md:p-12 custom-scrollbar">
+            <AnimatePresence>
+              {error && (
+                <motion.div 
+                  initial={{ opacity: 0, y: -20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                  className="max-w-5xl mx-auto mb-8 p-4 bg-soviet-red/10 border-4 border-soviet-red brutalist-border flex items-start gap-4 relative"
+                >
+                  <AlertCircle className="text-soviet-red shrink-0" size={24} />
+                  <div className="flex-1 space-y-2">
+                    <div className="text-sm font-display font-black uppercase italic text-soviet-red">Alerte Système</div>
+                    <p className="text-xs font-mono font-bold leading-relaxed">{error}</p>
+                    {error.includes('Domaines autorisés') && (
+                      <div className="pt-2">
+                        <a 
+                          href="https://console.firebase.google.com/project/_/authentication/providers" 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="text-[10px] bg-soviet-red text-white px-3 py-1 font-display font-black uppercase hover:bg-white hover:text-soviet-red transition-all inline-flex items-center gap-2"
+                        >
+                          <ExternalLink size={12} /> Configurer Authentication dans Firebase
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                  <button onClick={() => setError(null)} className="p-1 hover:text-soviet-red transition-colors">
+                    <X size={20} />
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             <AnimatePresence mode="wait">
               {currentView === 'dashboard' && (
                 <motion.div key="dashboard" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="max-w-5xl mx-auto space-y-12">
@@ -904,7 +959,25 @@ export default function App() {
                         <input type="text" value={targetBoxer} onChange={(e) => setTargetBoxer(e.target.value)} placeholder={t.placeholderIA} className="w-full bg-soviet-dark brutalist-border px-4 py-3 font-sans focus:border-soviet-red outline-none transition-colors" />
                       </div>
 
-                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                      <div className="soviet-card p-6 border-soviet-light/30 bg-soviet-gray/10 mb-8 font-mono text-[10px] space-y-2">
+                <div className="flex justify-between border-b border-soviet-light/10 pb-1">
+                  <span className="opacity-50 uppercase tracking-widest">Connecté à</span>
+                  <span className="text-soviet-red truncate ml-4">{window.location.hostname}</span>
+                </div>
+                <div className="flex justify-between border-b border-soviet-light/10 pb-1">
+                  <span className="opacity-50 uppercase tracking-widest">Status Firebase</span>
+                  <span className={cn(isAuthReady ? "text-green-500" : "text-yellow-500")}>
+                    {isAuthReady ? "OPÉRATIONNEL" : "INITIALISATION..."}
+                  </span>
+                </div>
+                {!user && (
+                  <p className="text-soviet-red italic animate-pulse mt-4 bg-soviet-red/5 p-2 border border-soviet-red/20">
+                    ATTENTION : Si la connexion échoue, assurez-vous que "{window.location.hostname}" est ajouté aux Domaines Autorisés dans Firebase.
+                  </p>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                         {[
                           { type: 'user', label: t.yourMovement, icon: Activity, video: userVideo, ref: userVideoRef, reset: () => setUserVideo(null) },
                           { type: 'ref', label: t.refMaster, icon: Shield, video: refVideo, ref: refVideoRef, reset: () => setRefVideo(null) }
@@ -962,12 +1035,6 @@ export default function App() {
                             </>
                           ) : <><Zap /> {t.runAnalysis}</>}
                         </button>
-                        {error && (
-                          <div className="p-4 bg-soviet-red/10 border-2 border-soviet-red brutalist-border flex flex-col gap-2">
-                            <div className="flex items-center gap-2 text-soviet-red font-bold uppercase text-xs"><AlertCircle size={16} /> {error}</div>
-                            {!hasApiKey && <button onClick={handleSelectKey} className="text-[10px] uppercase font-black italic underline hover:text-white transition-colors text-left">Configurer la clé API maintenant</button>}
-                          </div>
-                        )}
                       </div>
 
                       <AnimatePresence>
