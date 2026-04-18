@@ -18,6 +18,7 @@ import {
   Video,
   Zap,
   Info,
+  Lock,
   AlertCircle,
   CheckCircle2,
   Loader2,
@@ -37,6 +38,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import { GoogleGenAI } from "@google/genai";
+import { compressVideo } from './lib/videoCompression';
 import { CHAPTERS, Language } from './constants';
 import { TRANSLATIONS } from './translations';
 import { cn } from './lib/utils';
@@ -174,15 +176,28 @@ export default function App() {
     setIsStandalone(isStandaloneMode);
   }, []);
 
-  // Auth Listener
+  // Auth & Subscription Sync
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       setUser(firebaseUser);
       if (firebaseUser) {
-        const path = `users/${firebaseUser.uid}`;
+        const userDocRef = doc(db, 'users', firebaseUser.uid);
+        
+        // Handle subscription success from URL
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.get('subscription_success') === 'true') {
+          try {
+            await setDoc(userDocRef, { isSubscribed: true, updatedAt: new Date().toISOString() }, { merge: true });
+            setIsSubscribed(true);
+            // Clean URL
+            window.history.replaceState({}, document.title, window.location.pathname);
+          } catch (e) {
+            console.error("Error updating subscription:", e);
+          }
+        }
+
         try {
           const isAdminByEmail = firebaseUser.email === 'gougou93120@gmail.com';
-          const userDocRef = doc(db, 'users', firebaseUser.uid);
           const userDoc = await getDoc(userDocRef);
           
           if (!userDoc.exists()) {
@@ -192,17 +207,34 @@ export default function App() {
               displayName: firebaseUser.displayName,
               photoURL: firebaseUser.photoURL,
               role: isAdminByEmail ? 'admin' : 'user',
+              isSubscribed: false,
               createdAt: new Date().toISOString()
             });
+          } else {
+            const data = userDoc.data();
+            setIsSubscribed(data.isSubscribed || false);
+            setFreeAnalysesUsed(data.freeAnalysesUsed || 0);
+            setIsAdmin(data.role === 'admin' || isAdminByEmail);
           }
-          
-          const role = userDoc.exists() ? userDoc.data().role : (isAdminByEmail ? 'admin' : 'user');
-          setIsAdmin(role === 'admin' || isAdminByEmail);
         } catch (error) {
-          handleFirestoreError(error, OperationType.GET, path);
+          handleFirestoreError(error, OperationType.GET, `users/${firebaseUser.uid}`);
         }
+
+        // Fetch History from Firestore
+        try {
+          const historyRef = doc(db, 'history', firebaseUser.uid);
+          const historyDoc = await getDoc(historyRef);
+          if (historyDoc.exists()) {
+            setHistory(historyDoc.data().entries || []);
+          }
+        } catch (e) {
+          console.error("Error fetching history:", e);
+        }
+
       } else {
         setIsAdmin(false);
+        setIsSubscribed(false);
+        setHistory([]);
       }
       setIsAuthReady(true);
     });
@@ -222,6 +254,7 @@ export default function App() {
   // Trial & Subscription
   const [trialStartDate, setTrialStartDate] = useState<number | null>(null);
   const [isSubscribed, setIsSubscribed] = useState(false);
+  const [freeAnalysesUsed, setFreeAnalysesUsed] = useState(0);
   const [timeLeft, setTimeLeft] = useState({ hours: 24, minutes: 0 });
 
   useEffect(() => {
@@ -255,8 +288,10 @@ export default function App() {
   }, [trialStartDate, isSubscribed]);
 
   const isTrialExpired = trialStartDate ? (Date.now() > trialStartDate + 24 * 60 * 60 * 1000) : false;
+  const FREE_LIMIT = 2;
   const OWNER_EMAIL = 'gougou93120@gmail.com';
-  const hasAccess = user?.email === OWNER_EMAIL || isAdmin || isSubscribed || !isTrialExpired;
+  const hasFreeAnalyses = freeAnalysesUsed < FREE_LIMIT;
+  const hasAccess = user?.email === OWNER_EMAIL || isAdmin || isSubscribed || (!isTrialExpired && hasFreeAnalyses);
 
   // Analysis State
   const [quotaExceeded, setQuotaExceeded] = useState(false);
@@ -266,11 +301,11 @@ export default function App() {
   const [refVideoFile, setRefVideoFile] = useState<File | null>(null);
   const [targetBoxer, setTargetBoxer] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isCompressing, setIsCompressing] = useState<string | null>(null);
+  const [compressionProgress, setCompressionProgress] = useState(0);
   const [analysisResult, setAnalysisResult] = useState<string | null>(null);
-  const [history, setHistory] = useState<HistoryEntry[]>(() => {
-    const saved = localStorage.getItem('soviet_boxing_history');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [isCheckingSubscription, setIsCheckingSubscription] = useState(false);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [debugLog, setDebugLog] = useState<string[]>([]);
 
@@ -335,13 +370,15 @@ export default function App() {
     window.location.reload();
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, type: 'user' | 'ref') => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: 'user' | 'ref') => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (file.size > 30 * 1024 * 1024) {
+    const isLargeFile = file.size > 20 * 1024 * 1024;
+    
+    if (file.size > 500 * 1024 * 1024) {
       addLog(`ERREUR: Fichier trop lourd (${(file.size / 1024 / 1024).toFixed(1)}Mo)`);
-      setError(lang === 'fr' ? "Fichier trop lourd (Max 30Mo)" : "File too heavy (Max 30MB)");
+      setError(lang === 'fr' ? "Fichier dépassant 500Mo" : "File exceeds 500MB");
       return;
     }
 
@@ -353,17 +390,36 @@ export default function App() {
       return;
     }
 
-    // Revoke old URL to free memory
-    if (type === 'user' && userVideo) URL.revokeObjectURL(userVideo);
-    if (type === 'ref' && refVideo) URL.revokeObjectURL(refVideo);
+    let finalFile = file;
+    let finalUrl = URL.createObjectURL(file);
 
-    const url = URL.createObjectURL(file);
+    if (isLargeFile) {
+      setIsCompressing(type === 'user' ? 'Utilisateur' : 'Maître');
+      setCompressionProgress(0);
+      try {
+        addLog(`OPTIMISATION: Réduction de la charge utile pour "${file.name}"...`);
+        const compressedBlob = await compressVideo(file, {
+          onProgress: (p) => setCompressionProgress(p)
+        });
+        finalFile = new File([compressedBlob], file.name, { type: 'video/webm' });
+        finalUrl = URL.createObjectURL(compressedBlob);
+        addLog(`SUCCÈS: Format optimisé (${(finalFile.size / 1024 / 1024).toFixed(1)}Mo)`);
+      } catch (err) {
+        console.error(err);
+        addLog("AVERTISSEMENT: Échec de l'optimisation, utilisation du fichier original.");
+      } finally {
+        setIsCompressing(null);
+      }
+    }
+
     if (type === 'user') {
-      setUserVideo(url);
-      setUserVideoFile(file);
+      if (userVideo) URL.revokeObjectURL(userVideo);
+      setUserVideo(finalUrl);
+      setUserVideoFile(finalFile);
     } else {
-      setRefVideo(url);
-      setRefVideoFile(file);
+      if (refVideo) URL.revokeObjectURL(refVideo);
+      setRefVideo(finalUrl);
+      setRefVideoFile(finalFile);
     }
   };
 
@@ -405,25 +461,29 @@ export default function App() {
     const performAnalysis = async () => {
       try {
         const ai = new GoogleGenAI({ apiKey });
-        const modelName = "gemini-1.5-flash";
+        const modelName = isSubscribed || isAdmin ? "gemini-1.5-pro" : "gemini-1.5-flash";
 
         const userVideoBase64 = await fileToBase64(userVideoFile);
         const refVideoBase64 = await fileToBase64(refVideoFile);
 
         const totalPayloadSize = userVideoBase64.length + refVideoBase64.length;
-        addLog(`Payload IA: ${(totalPayloadSize / (1024 * 1024)).toFixed(1)}MB`);
+        addLog(`IA PRO: ${(totalPayloadSize / (1024 * 1024)).toFixed(1)}MB [Model: ${modelName}]`);
 
-        if (totalPayloadSize > 60 * 1024 * 1024) {
-          addLog("ERREUR: Payload trop lourd (>60MB)");
-          throw new Error(lang === 'fr' ? "Le total des deux vidéos est trop lourd pour l'IA. Réduisez la durée ou la résolution." : "Total size of both videos is too heavy for the AI. Reduce duration or resolution.");
+        // Higher production limits for Subscribed/Admin
+        const sizeLimit = isSubscribed || isAdmin ? 200 * 1024 * 1024 : 60 * 1024 * 1024;
+        
+        if (totalPayloadSize > sizeLimit) {
+          addLog("ERREUR: Payload trop lourd");
+          throw new Error(lang === 'fr' 
+            ? `Le total des vidéos (${(totalPayloadSize / 1024 / 1024).toFixed(1)}MB) dépasse la limite de ${isSubscribed || isAdmin ? '100MB' : '60MB'}.` 
+            : `Total video size (${(totalPayloadSize / 1024 / 1024).toFixed(1)}MB) exceeds the ${isSubscribed || isAdmin ? '100MB' : '60MB'} limit.`);
         }
 
-        console.log(`Analyzing videos: User (${userVideoFile.size} bytes), Ref (${refVideoFile.size} bytes)`);
-        console.log(`Base64 sizes: User (${userVideoBase64.length}), Ref (${refVideoBase64.length})`);
+        console.log(`Analyzing videos with ${modelName}: User (${userVideoFile.size} bytes), Ref (${refVideoFile.size} bytes)`);
 
         const historyContext = history
-          .slice(-3)
-          .map(h => `[${h.date}] Analyse de ${h.targetBoxer}: ${h.result.substring(0, 500)}...`)
+          .slice(-10) // Increase to last 10 for better memory
+          .map(h => `--- ANALYSE DU ${h.date} (Cible: ${h.targetBoxer}) ---\nRESULTAT: ${h.result}`)
           .join('\n\n');
 
         const promptMap = {
@@ -514,14 +574,35 @@ export default function App() {
         setAnalysisStep(4);
         setAnalysisResult(response.text);
         
-        // Save to history
-        const newEntry: HistoryEntry = {
-          id: Date.now().toString(),
-          date: new Date().toLocaleDateString(),
-          targetBoxer: targetBoxer || 'Boxeur',
-          result: response.text
-        };
-        setHistory(prev => [...prev, newEntry].slice(-10)); // Keep last 10 entries
+        // Save to Firestore History & Update Counter
+        if (user) {
+          const userDocRef = doc(db, 'users', user.uid);
+          const newEntry: HistoryEntry = {
+            id: Date.now().toString(),
+            date: new Date().toLocaleDateString(),
+            targetBoxer: targetBoxer || 'Boxeur',
+            result: response.text
+          };
+          const updatedHistory = [...history, newEntry].slice(-20);
+          setHistory(updatedHistory);
+          
+          try {
+            // Use a transaction or batch if possible, but simple update is fine here
+            await setDoc(doc(db, 'history', user.uid), {
+              entries: updatedHistory,
+              updatedAt: new Date().toISOString()
+            });
+
+            // Increment usage if not subscribed/admin
+            if (!isSubscribed && !isAdmin) {
+              const newCount = freeAnalysesUsed + 1;
+              await setDoc(userDocRef, { freeAnalysesUsed: newCount }, { merge: true });
+              setFreeAnalysesUsed(newCount);
+            }
+          } catch (e) {
+            console.error("Error saving history or updating counter:", e);
+          }
+        }
         
         setQuotaExceeded(false);
       } catch (err: any) {
@@ -573,9 +654,9 @@ export default function App() {
       const ai = new GoogleGenAI({ apiKey });
       if (!chatRef.current) {
         chatRef.current = ai.chats.create({
-          model: "gemini-1.5-flash",
+          model: isSubscribed || isAdmin ? "gemini-3.1-pro-preview" : "gemini-3-flash-preview",
           config: {
-            systemInstruction: `Tu es un expert en boxe de l'école soviétique. Analyse précédente : "${analysisResult}". Réponds de manière technique et encourageante.`,
+            systemInstruction: `Tu es un expert en boxe de l'école soviétique. Tu as accès à l'intégralité de l'historique de l'utilisateur. Analyse actuelle : "${analysisResult}". Réponds de manière technique, précise et encourageante. Ton but est de faire de cet utilisateur un maître du style soviétique (Pendulum, distance, relâchement).`,
           },
         });
       }
@@ -600,6 +681,32 @@ export default function App() {
     setLang(newLang);
     const newChapter = CHAPTERS[newLang].find(c => c.id === currentId);
     if (newChapter) setSelectedChapter(newChapter);
+  };
+
+  const handleSubscribe = async (planType: 'monthly' | 'yearly' = 'monthly') => {
+    if (!user) {
+      handleLogin();
+      return;
+    }
+    setIsCheckingSubscription(true);
+    setError(null);
+    try {
+      const response = await fetch('/api/create-checkout-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: user.email, userId: user.uid, planType }),
+      });
+      const data = await response.json();
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        throw new Error(data.error || "Erreur lors de la création de la session Stripe");
+      }
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setIsCheckingSubscription(false);
+    }
   };
 
   // --- Render Helpers ---
@@ -790,6 +897,50 @@ export default function App() {
 
           <div className="flex-1 overflow-y-auto p-4 md:p-12 custom-scrollbar">
             <AnimatePresence>
+              {isCompressing && (
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.9 }}
+                  className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-soviet-dark/95 backdrop-blur-xl"
+                >
+                  <div className="soviet-card max-w-lg w-full p-12 text-center space-y-8 border-soviet-red relative overflow-hidden">
+                    <div className="absolute top-0 left-0 w-full h-1 bg-soviet-red/20">
+                      <motion.div 
+                        className="h-full bg-soviet-red"
+                        animate={{ width: `${compressionProgress}%` }}
+                      />
+                    </div>
+                    
+                    <div className="relative">
+                      <RefreshCw size={64} className="text-soviet-red mx-auto animate-spin mb-4" />
+                      <Activity size={32} className="absolute inset-0 m-auto text-white animate-pulse" />
+                    </div>
+
+                    <div className="space-y-4">
+                      <h2 className="text-4xl font-display font-black italic uppercase tracking-tighter text-soviet-red">
+                        Optimisation Lab
+                      </h2>
+                      <p className="font-mono text-sm opacity-70">
+                        Traitement de la vidéo : <span className="text-white bg-soviet-red/20 px-2 uppercase font-bold">{isCompressing}</span>
+                      </p>
+                      <div className="font-mono text-2xl font-black text-soviet-red tracking-widest">
+                        {compressionProgress}%
+                      </div>
+                      <p className="text-xs opacity-50 uppercase tracking-widest max-w-xs mx-auto">
+                        Réduction de la charge utile moléculaire pour analyse IA profonde...
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-4 gap-2 opacity-30">
+                      {[...Array(4)].map((_, i) => (
+                        <div key={i} className="h-1 bg-soviet-red animate-pulse" style={{ animationDelay: `${i * 200}ms` }} />
+                      ))}
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+
               {error && (
                 <motion.div 
                   initial={{ opacity: 0, y: -20 }}
@@ -1167,10 +1318,31 @@ export default function App() {
                     <p className="opacity-60 font-mono text-sm uppercase tracking-widest">L'excellence technique n'a pas de prix, mais elle a un coût.</p>
                   </div>
 
+                  <div className="bg-soviet-gray/30 brutalist-border p-8 border-soviet-blue/30 relative overflow-hidden">
+                    <Shield size={60} className="absolute -right-4 -bottom-4 opacity-5 text-soviet-blue" />
+                    <h3 className="text-xl font-display font-black uppercase text-soviet-blue mb-4 flex items-center gap-2">
+                      <Lock size={18} /> {lang === 'fr' ? "Engagement & Sécurité" : lang === 'es' ? "Compromiso y Seguridad" : "Commitment & Security"}
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-[10px] font-mono leading-relaxed uppercase opacity-80">
+                      <div className="space-y-2">
+                        <div className="font-black text-soviet-red">01. LIBERTÉ TOTALE</div>
+                        <p>{lang === 'fr' ? "Sans engagement. Annulation en un clic depuis votre espace client." : "No commitment. One-click cancellation from your client area."}</p>
+                      </div>
+                      <div className="space-y-2">
+                        <div className="font-black text-soviet-red">02. PAIEMENT SÉCURISÉ</div>
+                        <p>{lang === 'fr' ? "Transactions cryptées via Stripe (Certifié PCI). Aucune donnée bancaire stockée ici." : "Encrypted transactions via Stripe (PCI Certified). No banking data stored here."}</p>
+                      </div>
+                      <div className="space-y-2">
+                        <div className="font-black text-soviet-red">03. PROTECTION DES DONNÉES</div>
+                        <p>{lang === 'fr' ? "Vos vidéos vous appartiennent. Elles sont traitées uniquement pour votre analyse privée." : "Your videos belong to you. They are processed only for your private analysis."}</p>
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                     {[
-                      { title: t.monthlySub, price: t.priceMonthly, features: [t.unlimitedAccess, t.prioritySupport], best: false },
-                      { title: t.yearlySub, price: t.priceYearly, features: [t.unlimitedAccess, t.prioritySupport, t.newChapters], best: true }
+                      { title: t.monthlySub, price: t.priceMonthly, features: [t.unlimitedAccess, t.prioritySupport], best: false, type: 'monthly' },
+                      { title: t.yearlySub, price: t.priceYearly, features: [t.unlimitedAccess, t.prioritySupport, t.newChapters], best: true, type: 'yearly' }
                     ].map((plan, i) => (
                       <div key={i} className={cn("soviet-card relative flex flex-col justify-between p-10", plan.best && "border-soviet-red border-4 shadow-[12px_12px_0px_0px_rgba(255,0,0,0.2)]")}>
                         {plan.best && <div className="absolute -top-4 left-1/2 -translate-x-1/2 bg-soviet-red text-white px-6 py-1 font-display font-black uppercase text-xs italic">{t.bestValue}</div>}
@@ -1187,10 +1359,29 @@ export default function App() {
                             ))}
                           </ul>
                         </div>
-                        <button className="soviet-button soviet-button-primary w-full mt-12">{t.subscribe}</button>
+                        <button 
+                          onClick={() => handleSubscribe(plan.type as any)} 
+                          disabled={isCheckingSubscription}
+                          className="soviet-button soviet-button-primary w-full mt-12"
+                        >
+                          {isCheckingSubscription ? <Loader2 className="animate-spin mx-auto" /> : t.subscribe}
+                        </button>
                       </div>
                     ))}
                   </div>
+
+                  {isSubscribed && (
+                    <div className="pt-12 text-center">
+                      <p className="text-xs font-mono opacity-50 mb-4 uppercase">Vous êtes déjà membre de l'élite Boxing Science.</p>
+                      <button 
+                        onClick={() => window.open('https://billing.stripe.com/p/login/test_your_link_here', '_blank')}
+                        className="text-[10px] font-display font-black uppercase italic text-soviet-red hover:text-white transition-colors underline"
+                      >
+                        {lang === 'fr' ? "→ Gérer mon abonnement / Factures" : "→ Manage subscription / Invoices"}
+                      </button>
+                      <p className="mt-4 text-[8px] opacity-30 italic">Note : Utilisez le lien envoyé par Stripe lors de votre premier achat pour accéder à votre portail sécurisé.</p>
+                    </div>
+                  )}
                 </motion.div>
               )}
             </AnimatePresence>

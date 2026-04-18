@@ -10,15 +10,40 @@
         "displayName": { "type": "string", "description": "The user's display name." },
         "photoURL": { "type": "string", "description": "The user's profile photo URL." },
         "role": { "type": "string", "enum": ["admin", "user"], "description": "The user's role in the application." },
+        "isSubscribed": { "type": "boolean", "description": "Whether the user has an active subscription." },
         "createdAt": { "type": "string", "format": "date-time", "description": "When the user was created." }
       },
       "required": ["uid", "email", "role"]
+    },
+    "History": {
+      "title": "History",
+      "description": "User's analysis history.",
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "date": { "type": "string" },
+              "targetBoxer": { "type": "string" },
+              "result": { "type": "string" }
+            }
+          }
+        },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": "User",
       "description": "Collection of user profiles."
+    },
+    "/history/{userId}": {
+      "schema": "History",
+      "description": "User analysis history storage."
     }
   }
 }
