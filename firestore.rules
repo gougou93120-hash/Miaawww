@@ -47,7 +47,7 @@ service cloud.firestore {
     function isValidHistory(data) {
       return data.keys().hasAll(['entries']) &&
         data.entries is list &&
-        data.entries.size() <= 20;
+        data.entries.size() <= 500; // Increased limit
     }
 
     // ===============================================================

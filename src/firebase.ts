@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
-import { initializeFirestore, memoryLocalCache, doc, getDoc, setDoc, onSnapshot, getDocFromServer } from 'firebase/firestore';
+import { initializeFirestore, memoryLocalCache, doc, getDoc, setDoc, updateDoc, arrayUnion, onSnapshot, getDocFromServer } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 // Initialize Firebase SDK
@@ -75,5 +75,5 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(errorString);
 }
 
-export { signInWithPopup, signOut, onAuthStateChanged, doc, getDoc, setDoc, onSnapshot };
+export { signInWithPopup, signOut, onAuthStateChanged, doc, getDoc, setDoc, updateDoc, arrayUnion, onSnapshot };
 export type { FirebaseUser };

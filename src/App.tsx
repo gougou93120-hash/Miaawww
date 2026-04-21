@@ -37,7 +37,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { compressVideo } from './lib/videoCompression';
 import { CHAPTERS, Language } from './constants';
 import { TRANSLATIONS } from './translations';
@@ -52,13 +52,15 @@ import {
   doc, 
   getDoc, 
   setDoc, 
+  updateDoc,
+  arrayUnion,
   FirebaseUser, 
   handleFirestoreError, 
   OperationType 
 } from './firebase';
 
 // --- Types ---
-type View = 'dashboard' | 'chapters' | 'analysis' | 'bivol' | 'subscription';
+type View = 'dashboard' | 'chapters' | 'analysis' | 'bivol' | 'subscription' | 'history';
 
 // --- Components ---
 
@@ -148,23 +150,82 @@ export default function App() {
   // Check for API Key
   useEffect(() => {
     const checkKey = async () => {
-      if ((window as any).aistudio?.hasSelectedApiKey) {
-        const selected = await (window as any).aistudio.hasSelectedApiKey();
-        setHasApiKey(selected || !!process.env.GEMINI_API_KEY);
-      } else {
+      try {
+        // Check server health first
+        const res = await fetch('/api/health');
+        const health = await res.json();
+        
+        if (health.ai) {
+          setHasApiKey(true);
+          return;
+        }
+
+        // Fallback to local platform check if server doesn't have it
+        if ((window as any).aistudio?.hasSelectedApiKey) {
+          const selected = await (window as any).aistudio.hasSelectedApiKey();
+          setHasApiKey(selected || !!process.env.GEMINI_API_KEY);
+        } else {
+          setHasApiKey(!!process.env.GEMINI_API_KEY);
+        }
+      } catch (e) {
         setHasApiKey(!!process.env.GEMINI_API_KEY);
       }
     };
     checkKey();
+    
+    // Auto-selected key listener if platform supports it
+    const timer = setInterval(checkKey, 5000);
+    return () => clearInterval(timer);
   }, []);
+
+  const testApiKey = async () => {
+    try {
+      addLog("TEST IA: Envoi d'un message court...");
+      const apiKey = getActiveApiKey();
+      if (!apiKey || apiKey === "undefined") {
+        throw new Error("Clé API non détectée.");
+      }
+      
+      const ai = new GoogleGenerativeAI(apiKey);
+      const model = ai.getGenerativeModel({
+        model: "gemini-1.5-flash",
+      });
+      const result = await model.generateContent("Dis 'Prêt' en français.");
+      const response = await result.response;
+      const text = response.text();
+      
+      if (text) {
+        addLog(`TEST RÉUSSI: L'IA a répondu: "${text}"`);
+        setError(null);
+        setHasApiKey(true);
+      } else {
+        throw new Error("Réponse vide de l'IA.");
+      }
+    } catch (err: any) {
+      console.error("Test API Error:", err);
+      const rawError = err.message || JSON.stringify(err);
+      addLog(`TEST ÉCHOUÉ: ${rawError}`);
+      setError(`DÉTAIL ERREUR GOOGLE: ${rawError}`);
+      setHasApiKey(false);
+    }
+  };
 
   const handleSelectKey = async () => {
     if ((window as any).aistudio?.openSelectKey) {
-      await (window as any).aistudio.openSelectKey();
-      setHasApiKey(true);
-      setError(null);
+      try {
+        addLog("SYSTÈME: Ouverture du sélecteur de clé...");
+        await (window as any).aistudio.openSelectKey();
+        const selected = await (window as any).aistudio.hasSelectedApiKey();
+        setHasApiKey(selected || !!process.env.GEMINI_API_KEY);
+        if (selected || process.env.GEMINI_API_KEY) {
+          setError(null);
+          addLog("SUCCÈS: IA Reconnectée.");
+        }
+      } catch (e) {
+        console.error("Error selecting key:", e);
+      }
     } else {
-      alert("Veuillez configurer votre clé GEMINI_API_KEY dans les paramètres de l'application.");
+      alert("Veuillez configurer GEMINI_API_KEY dans l'onglet 'Secrets' (⚙️) puis REPUBLIER l'application.");
     }
   };
 
@@ -180,6 +241,9 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       setUser(firebaseUser);
+      
+      const isAdminByEmail = firebaseUser?.email === 'gougou93120@gmail.com';
+      
       if (firebaseUser) {
         const userDocRef = doc(db, 'users', firebaseUser.uid);
         
@@ -197,7 +261,6 @@ export default function App() {
         }
 
         try {
-          const isAdminByEmail = firebaseUser.email === 'gougou93120@gmail.com';
           const userDoc = await getDoc(userDocRef);
           
           if (!userDoc.exists()) {
@@ -210,6 +273,7 @@ export default function App() {
               isSubscribed: false,
               createdAt: new Date().toISOString()
             });
+            setIsAdmin(isAdminByEmail);
           } else {
             const data = userDoc.data();
             setIsSubscribed(data.isSubscribed || false);
@@ -217,15 +281,23 @@ export default function App() {
             setIsAdmin(data.role === 'admin' || isAdminByEmail);
           }
         } catch (error) {
-          handleFirestoreError(error, OperationType.GET, `users/${firebaseUser.uid}`);
+          // If Firestore fails, at least grant Admin permission locally if email matches
+          console.error("Auth sync error:", error);
+          if (isAdminByEmail) setIsAdmin(true);
         }
 
-        // Fetch History from Firestore
+        // Fetch History from Firestore - MERGE with locale if exists
         try {
           const historyRef = doc(db, 'history', firebaseUser.uid);
           const historyDoc = await getDoc(historyRef);
           if (historyDoc.exists()) {
-            setHistory(historyDoc.data().entries || []);
+            const serverEntries = historyDoc.data().entries || [];
+            // Preserve locally created entries during this session if sync was slow
+            setHistory(prev => {
+              const existingIds = new Set(prev.map(e => e.id));
+              const missingFromServer = serverEntries.filter((e: any) => !existingIds.has(e.id));
+              return [...prev, ...missingFromServer];
+            });
           }
         } catch (e) {
           console.error("Error fetching history:", e);
@@ -252,26 +324,42 @@ export default function App() {
   }, []);
 
   // Trial & Subscription
-  const [trialStartDate, setTrialStartDate] = useState<number | null>(null);
+  const [trialStartDate, setTrialStartDate] = useState<number | null>(() => {
+    const saved = localStorage.getItem('soviet_boxing_trial_start_v3');
+    const parsed = saved ? parseInt(saved) : null;
+    return (parsed && !isNaN(parsed)) ? parsed : null;
+  });
   const [isSubscribed, setIsSubscribed] = useState(false);
-  const [freeAnalysesUsed, setFreeAnalysesUsed] = useState(0);
+  const [freeAnalysesUsed, setFreeAnalysesUsed] = useState<number>(() => {
+    const saved = localStorage.getItem('soviet_boxing_free_used_v2');
+    return saved ? parseInt(saved) : 0;
+  });
   const [timeLeft, setTimeLeft] = useState({ hours: 24, minutes: 0 });
 
+  // Sync free used
   useEffect(() => {
-    const storedStart = localStorage.getItem('soviet_boxing_trial_start');
+    localStorage.setItem('soviet_boxing_free_used_v2', freeAnalysesUsed.toString());
+  }, [freeAnalysesUsed]);
+
+  useEffect(() => {
+    const storedStart = localStorage.getItem('soviet_boxing_trial_start_v3');
     const now = Date.now();
     if (storedStart) {
-      setTrialStartDate(parseInt(storedStart));
-    } else {
-      localStorage.setItem('soviet_boxing_trial_start', now.toString());
-      setTrialStartDate(now);
+      const parsed = parseInt(storedStart);
+      if (!isNaN(parsed)) setTrialStartDate(parsed);
+    } else if (user) {
+      // Only start the clock if they are logged in and NOT admin/sub
+      if (user.email !== OWNER_EMAIL && !isAdmin && !isSubscribed) {
+        localStorage.setItem('soviet_boxing_trial_start_v3', now.toString());
+        setTrialStartDate(now);
+      }
     }
     const storedSub = localStorage.getItem('soviet_boxing_subscribed');
     if (storedSub === 'true') setIsSubscribed(true);
-  }, []);
+  }, [user, isAdmin, isSubscribed]);
 
   useEffect(() => {
-    if (!trialStartDate || isSubscribed) return;
+    if (!trialStartDate || isSubscribed || isAdmin) return;
     const timer = setInterval(() => {
       const now = Date.now();
       const diff = (trialStartDate + 24 * 60 * 60 * 1000) - now;
@@ -285,13 +373,20 @@ export default function App() {
       }
     }, 1000);
     return () => clearInterval(timer);
-  }, [trialStartDate, isSubscribed]);
+  }, [trialStartDate, isSubscribed, isAdmin]);
 
-  const isTrialExpired = trialStartDate ? (Date.now() > trialStartDate + 24 * 60 * 60 * 1000) : false;
+  const isTrialExpired = (trialStartDate && !isAdmin && !isSubscribed) 
+    ? (Date.now() > trialStartDate + 24 * 60 * 60 * 1000) 
+    : false;
+
   const FREE_LIMIT = 2;
   const OWNER_EMAIL = 'gougou93120@gmail.com';
   const hasFreeAnalyses = freeAnalysesUsed < FREE_LIMIT;
-  const hasAccess = user?.email === OWNER_EMAIL || isAdmin || isSubscribed || (!isTrialExpired && hasFreeAnalyses);
+  
+  // CRITICAL FIX: Only block if auth is ready. 
+  // Owner/Admin/Subscribed have total freedom.
+  const isDirectAdmin = user?.email === OWNER_EMAIL;
+  const hasAccess = !isAuthReady || (isDirectAdmin || isAdmin || isSubscribed || (hasFreeAnalyses && !isTrialExpired));
 
   // Analysis State
   const [quotaExceeded, setQuotaExceeded] = useState(false);
@@ -432,13 +527,18 @@ export default function App() {
     });
   };
 
+  const getActiveApiKey = (): string => {
+    const key = process.env.GEMINI_API_KEY || "";
+    return key.trim();
+  };
+
   const runAnalysis = async () => {
     if (!hasAccess) { setCurrentView('subscription'); return; }
     if (!userVideoFile || !refVideoFile) { setError(t.errorVideos); return; }
 
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = getActiveApiKey();
     if (!apiKey) {
-      setError("Clé API manquante. Veuillez configurer votre clé.");
+      setError("Clé API manquante ou invalide. Veuillez configurer votre clé dans 'Secrets' (⚙️) ou via le bouton 'TESTER' ci-dessous.");
       setHasApiKey(false);
       return;
     }
@@ -460,15 +560,13 @@ export default function App() {
 
     const performAnalysis = async () => {
       try {
-        const ai = new GoogleGenAI({ apiKey });
-        const modelName = isSubscribed || isAdmin ? "gemini-1.5-pro" : "gemini-1.5-flash";
+        // Force the BEST model for EVERYONE to ensure maximum satisfaction and reliability
+        const modelName = "gemini-1.5-pro"; 
 
         const userVideoBase64 = await fileToBase64(userVideoFile);
         const refVideoBase64 = await fileToBase64(refVideoFile);
-
         const totalPayloadSize = userVideoBase64.length + refVideoBase64.length;
-        addLog(`IA PRO: ${(totalPayloadSize / (1024 * 1024)).toFixed(1)}MB [Model: ${modelName}]`);
-
+        
         // Higher production limits for Subscribed/Admin
         const sizeLimit = isSubscribed || isAdmin ? 200 * 1024 * 1024 : 60 * 1024 * 1024;
         
@@ -479,10 +577,8 @@ export default function App() {
             : `Total video size (${(totalPayloadSize / 1024 / 1024).toFixed(1)}MB) exceeds the ${isSubscribed || isAdmin ? '100MB' : '60MB'} limit.`);
         }
 
-        console.log(`Analyzing videos with ${modelName}: User (${userVideoFile.size} bytes), Ref (${refVideoFile.size} bytes)`);
-
         const historyContext = history
-          .slice(-10) // Increase to last 10 for better memory
+          .slice(-10) 
           .map(h => `--- ANALYSE DU ${h.date} (Cible: ${h.targetBoxer}) ---\nRESULTAT: ${h.result}`)
           .join('\n\n');
 
@@ -494,113 +590,101 @@ export default function App() {
 
                 IMPORTANT : Le boxeur à analyser spécifiquement dans les vidéos est : "${targetBoxer || 'le boxeur principal'}".
                 
-                INSTRUCTIONS DE MÉMOIRE :
-                1. Commence TOUJOURS par une section "**RAPPEL DE PROGRESSION**". Résume brièvement où en était le boxeur lors des analyses précédentes et quels étaient les points critiques à améliorer.
-                2. Ensuite, effectue l'analyse actuelle en comparant les deux vidéos fournies :
-                - Vidéo 1 : Le mouvement de l'utilisateur.
-                - Vidéo 2 : Le mouvement de référence du maître.
-                
-                Génère un rapport détaillé et rédigé en français :
-                1. **Points Forts** : Explique précisément ce que "${targetBoxer || 'le boxeur'}" maîtrise déjà. Utilise des phrases complètes pour détailler l'impact positif de ces points sur son efficacité.
-                2. **Comparaison avec le Maître** : Détaille les différences techniques spécifiques. Explique le "pourquoi" derrière chaque différence (ex: alignement, transfert de poids, timing).
-                3. **Axes d'Amélioration** : Fournis des conseils pédagogiques et techniques développés pour combler l'écart. Explique comment corriger chaque défaut étape par étape.
-                
-                Règle d'or : Ne fais pas de listes courtes. Développe chaque point avec au moins 2 à 3 phrases explicatives.
-                Appuie-toi sur les 4 piliers : Relâchement, Jeu de jambes (Pendulum), Combat à distance, Tactique.`,
+                STRUCTURE DU RAPPORT :
+                1. POINTS FORTS : Commence impérativement par souligner les réussites techniques et les points positifs observés.
+                2. AXES D'AMÉLIORATION : Détaille ensuite les points techniques à corriger avec des explications tactiques.
+                3. RÉSUMÉ & OBJECTIF : Termine par une note encourageante et un objectif précis pour la prochaine séance.
+
+                Génère un rapport détaillé et rédigé en français.`,
           en: `In-depth comparative technical analysis of Soviet-style boxing.
                 
                 PROGRESSION CONTEXT (HISTORY):
                 ${historyContext || "No history available. This is the first analysis."}
 
                 IMPORTANT: The boxer to be specifically analyzed in the videos is: "${targetBoxer || 'the main boxer'}".
+
+                REPORT STRUCTURE:
+                1. STRENGTHS: You must start by highlighting the technical successes and positive points observed.
+                2. AREAS FOR IMPROVEMENT: Then detail the technical points to be corrected with tactical explanations.
+                3. SUMMARY & GOAL: End with an encouraging note and a specific goal for the next session.
                 
-                MEMORY INSTRUCTIONS:
-                1. ALWAYS start with a "**PROGRESS RECALL**" section. Briefly summarize where the boxer was in previous analyses and what the critical points for improvement were.
-                2. Then, perform the current analysis by comparing the two provided videos:
-                - Video 1: User's movement.
-                - Video 2: Master's reference movement.
-                
-                Generate a detailed, written report in English:
-                1. **Strengths**: Explain precisely what "${targetBoxer || 'the boxer'}" already masters. Use full sentences to detail the positive impact of these points on their effectiveness.
-                2. **Comparison with the Master**: Detail specific technical differences. Explain the "why" behind each difference (e.g., alignment, weight transfer, timing).
-                3. **Areas for Improvement**: Provide developed pedagogical and technical advice to close the gap. Explain how to correct each flaw step-by-step.
-                
-                Golden rule: Do not make short lists. Develop each point with at least 2 to 3 explanatory sentences.
-                Rely on the 4 pillars: Relaxation, Footwork (Pendulum), Distance Fighting, Tactics.`,
+                Generate a detailed, written report in English.`,
           es: `Análisis técnico comparativo profundo de boxeo estilo soviético.
                 
                 CONTEXTO DE PROGRESIÓN (HISTORIAL):
                 ${historyContext || "No hay historial disponible. Este es el primer análisis."}
 
                 IMPORTANT: El boxeador a analizar específicamente en los videos es: "${targetBoxer || 'el boxeador principal'}".
+
+                ESTRUCTURA DEL INFORME:
+                1. PUNTOS FUERTES: Debes comenzar resaltando los éxitos técnicos y los puntos positivos observados.
+                2. EJES DE MEJORA: Luego detalla los puntos técnicos a corregir con explicaciones tácticas.
+                3. RESUMEN Y OBJETIVO: Termina con una nota alentadora y un objetivo específico para la próxima sesión.
                 
-                INSTRUCCIONES DE MEMORIA:
-                1. Comienza SIEMPRE con una sección de "**RECORDATORIO DE PROGRESIÓN**". Resume brevemente dónde estaba el boxeador en análisis anteriores y cuáles eran los puntos críticos a mejorar.
-                2. Luego, realiza el análisis actual comparando los dos videos proporcionados:
-                - Video 1: Movimiento del usuario.
-                - Video 2: Movimiento de referencia del maestro.
-                
-                Genera un informe detallado y redactado en español:
-                1. **Puntos Fuertes**: Explica precisamente lo que "${targetBoxer || 'el boxeador'}" ya domina. Utiliza frases completas para detallar el impacto positivo de estos puntos en su efectividad.
-                2. **Comparación con el Maestro**: Detalla las diferencias técnicas específicas. Explica el "porqué" detrás de cada diferencia (ej: alineación, transferencia de peso, timing).
-                3. **Ejes de Mejora**: Proporciona consejos pedagógicos y técnicos desarrollados para cerrar la brecha. Explica cómo corregir cada defecto paso a paso.
-                
-                Regla de oro: No hagas listas cortas. Desarrolla cada punto con al menos 2 o 3 frases explicativas.
-                Apóyate en los 4 piliers: Relajación, Juego de pies (Pendulum), Combate a distancia, Táctica.`
+                Genera un informe detallado y redactado en español.`
         };
 
         const systemInstructionMap = {
-          fr: "Tu es un expert en boxe de l'école soviétique. Ton rôle est de fournir une analyse technique extrêmement détaillée et rédigée. Tu dois expliquer les concepts physiques et tactiques derrière chaque observation. Utilise un ton professionnel, précis et encourageant.",
-          en: "You are an expert in Soviet school boxing. Your role is to provide an extremely detailed and written technical analysis. You must explain the physical and tactical concepts behind each observation. Use a professional, precise, and encouraging tone.",
-          es: "Eres un experto en boxeo de la escuela soviética. Tu papel es proporcionar un análisis técnico extremadamente detallado y redactado. Debes explicar los conceptos físicos y tácticos detrás de cada observación. Utiliza un tono profesional, preciso y alentador."
+          fr: "Tu es un expert en boxe de l'école soviétique. Ton rôle est de fournir une analyse technique extrêmement détaillée et rédigée. Tu dois adopter une approche de 'coaching constructif' : commence TOUJOURS par les points positifs pour encourager l'élève avant de passer aux critiques techniques. Explique les concepts physiques et tactiques derrière chaque observation. Utilise un ton professionnel, précis et encourageant.",
+          en: "You are an expert in Soviet school boxing. Your role is to provide an extremely detailed and written technical analysis. You must adopt a 'constructive coaching' approach: ALWAYS start with positive points to encourage the student before moving on to technical criticisms. Explain the physical and tactical concepts behind each observation. Use a professional, precise, and encouraging tone.",
+          es: "Eres un experto en boxeo de la escuela soviética. Tu papel es proporcionar un análisis técnico extremadamente detallado y redactado. Debes adoptar un enfoque de 'entrenamiento constructivo': comienza SIEMPRE con los puntos positivos para animar al alumno antes de pasar a las críticas técnicas. Explica los conceptos físicos y tácticos detrás de cada observación. Utiliza un tono profesional, preciso y alentador."
         };
 
-        addLog("Analyse en cours...");
-        const response = await ai.models.generateContent({
-          model: modelName,
-          contents: {
-            role: 'user',
-            parts: [
-              { text: promptMap[lang] },
-              { inlineData: { mimeType: userVideoFile.type || "video/mp4", data: userVideoBase64 } },
-              { inlineData: { mimeType: refVideoFile.type || "video/mp4", data: refVideoBase64 } }
-            ]
-          },
-          config: { systemInstruction: systemInstructionMap[lang] }
+        addLog(`IA INITIALISATION: [Sur Serveur]`);
+        
+        const resAnalyze = await fetch('/api/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userVideo: userVideoBase64,
+            refVideo: refVideoBase64,
+            prompt: promptMap[lang],
+            model: modelName,
+            systemInstruction: systemInstructionMap[lang]
+          })
         });
 
-        if (!response.text) throw new Error("L'IA n'a pas pu générer de réponse.");
+        if (!resAnalyze.ok) {
+          const errorData = await resAnalyze.json();
+          throw new Error(errorData.error || "Erreur lors de l'analyse serveur.");
+        }
+
+        const data = await resAnalyze.json();
+        
+        if (!data.text) throw new Error("L'IA n'a pas pu générer de réponse.");
         addLog("Analyse terminée avec succès.");
         setAnalysisStep(4);
-        setAnalysisResult(response.text);
+        setAnalysisResult(data.text);
         
         // Save to Firestore History & Update Counter
         if (user) {
           const userDocRef = doc(db, 'users', user.uid);
+          const historyDocRef = doc(db, 'history', user.uid);
+          
           const newEntry: HistoryEntry = {
             id: Date.now().toString(),
             date: new Date().toLocaleDateString(),
             targetBoxer: targetBoxer || 'Boxeur',
-            result: response.text
+            result: data.text
           };
-          const updatedHistory = [...history, newEntry].slice(-20);
-          setHistory(updatedHistory);
+          
+          // Local update (append to end so it's consistent with arrayUnion)
+          setHistory(prev => [...prev, newEntry]);
           
           try {
-            // Use a transaction or batch if possible, but simple update is fine here
-            await setDoc(doc(db, 'history', user.uid), {
-              entries: updatedHistory,
+            // Use arrayUnion to append to the document without overwriting previous data
+            await setDoc(historyDocRef, {
+              entries: arrayUnion(newEntry),
               updatedAt: new Date().toISOString()
-            });
+            }, { merge: true });
 
-            // Increment usage if not subscribed/admin
             if (!isSubscribed && !isAdmin) {
               const newCount = freeAnalysesUsed + 1;
               await setDoc(userDocRef, { freeAnalysesUsed: newCount }, { merge: true });
               setFreeAnalysesUsed(newCount);
             }
           } catch (e) {
-            console.error("Error saving history or updating counter:", e);
+            console.error("Error saving history:", e);
           }
         }
         
@@ -610,30 +694,27 @@ export default function App() {
         addLog(`ERREUR IA: ${msg.substring(0, 30)}...`);
         
         attempt++;
-        // Retry on 503 (Overloaded) or 429 (Rate Limit)
         if (attempt < maxRetries && (msg.includes("503") || msg.includes("429") || msg.includes("overloaded") || msg.includes("demand"))) {
-          const delay = Math.pow(2, attempt) * 2000; // 2s, 4s, 8s
-          addLog(`Surcharge détectée. Nouvel essai dans ${delay/1000}s...`);
+          const delay = Math.pow(2, attempt) * 2000; 
+          addLog(`Nouvel essai dans ${delay/1000}s...`);
           await new Promise(resolve => setTimeout(resolve, delay));
           return performAnalysis();
         }
 
-        if (msg.includes("API key") || msg.includes("Requested entity was not found")) {
-          setError("Clé API invalide ou expirée. Veuillez la reconfigurer.");
+        if (msg.includes("API key") || msg.includes("Requested entity was not found") || msg.includes("401") || msg.includes("403")) {
+          setError(lang === 'fr' 
+            ? "Erreur de clé API sur le serveur. Veuillez vérifier vos 'Secrets' (⚙️) et REPUBLIER." 
+            : "Server API Key error. Please check your 'Secrets' (⚙️) and RE-PUBLISH.");
           setHasApiKey(false);
         } else if (msg.includes("429") || msg.includes("Quota") || msg.includes("limit")) {
           setQuotaExceeded(true);
-          setError("Limite de requêtes atteinte (Quota). L'IA est très sollicitée, réessayez dans une minute.");
-        } else if (msg.includes("503") || msg.includes("overloaded") || msg.includes("demand")) {
-          setError("Le serveur est surchargé (Erreur 503). Trop de demandes simultanées de la communauté. Réessayez dans quelques instants.");
+          setError("Limite de requêtes atteinte (Quota). Réessayez dans une minute.");
         } else {
           setError(err.message || t.errorGeneric);
         }
       } finally {
         clearInterval(stepInterval);
-        if (attempt >= maxRetries || !isAnalyzing) {
-          setIsAnalyzing(false);
-        }
+        setIsAnalyzing(false);
       }
     };
 
@@ -642,35 +723,33 @@ export default function App() {
 
   const handleAskQuestion = async () => {
     if (!userQuestion.trim() || !analysisResult || isAsking) return;
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) { setHasApiKey(false); return; }
-
+    
     const question = userQuestion.trim();
     setUserQuestion('');
     setChatMessages(prev => [...prev, { role: 'user', text: question }]);
     setIsAsking(true);
 
     try {
-      const ai = new GoogleGenAI({ apiKey });
-      if (!chatRef.current) {
-        chatRef.current = ai.chats.create({
-          model: isSubscribed || isAdmin ? "gemini-3.1-pro-preview" : "gemini-3-flash-preview",
-          config: {
-            systemInstruction: `Tu es un expert en boxe de l'école soviétique. Tu as accès à l'intégralité de l'historique de l'utilisateur. Analyse actuelle : "${analysisResult}". Réponds de manière technique, précise et encourageante. Ton but est de faire de cet utilisateur un maître du style soviétique (Pendulum, distance, relâchement).`,
-          },
-        });
-      }
-      const response = await chatRef.current.sendMessage({ message: question });
-      setChatMessages(prev => [...prev, { role: 'model', text: response.text || '' }]);
+      const modelName = isSubscribed || isAdmin ? "gemini-1.5-pro" : "gemini-1.5-flash";
+      const systemInstruction = `Tu es un expert en boxe de l'école soviétique. Tu as accès à l'intégralité de l'historique de l'utilisateur. Analyse actuelle : "${analysisResult}". Réponds de manière technique, précise et encourageante. Ton but est de faire de cet utilisateur un maître du style soviétique (Pendulum, distance, relâchement).`;
+
+      const resChat = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [...chatMessages, { role: 'user', text: question }],
+          systemInstruction,
+          model: modelName
+        })
+      });
+
+      if (!resChat.ok) throw new Error("Erreur de chat sur le serveur.");
+      const data = await resChat.json();
+
+      setChatMessages(prev => [...prev, { role: 'model', text: data.text || '' }]);
     } catch (err: any) {
       console.error(err);
-      if (err.message?.includes("API key") || err.message?.includes("Requested entity was not found")) {
-        setError("Clé API invalide ou expirée.");
-        setHasApiKey(false);
-      } else {
-        setChatMessages(prev => [...prev, { role: 'model', text: t.errorGeneric }]);
-      }
-      chatRef.current = null;
+      setChatMessages(prev => [...prev, { role: 'model', text: t.errorGeneric }]);
     } finally {
       setIsAsking(false);
     }
@@ -791,6 +870,17 @@ export default function App() {
         </button>
 
         <button 
+          onClick={() => setCurrentView('history')}
+          className={cn(
+            "w-full flex items-center gap-3 px-4 py-3 font-display font-bold uppercase tracking-tight transition-all",
+            currentView === 'history' ? "bg-soviet-red text-white" : "hover:bg-soviet-gray"
+          )}
+        >
+          <History size={20} />
+          {t.historyTitle}
+        </button>
+
+        <button 
           onClick={() => setCurrentView('bivol')}
           className={cn(
             "w-full flex items-center gap-3 px-4 py-3 font-display font-bold uppercase tracking-tight transition-all",
@@ -832,10 +922,18 @@ export default function App() {
 
       <div className="p-4 border-t-2 border-soviet-light space-y-3">
         {!isSubscribed && !isAdmin && (
-          <div className="p-3 brutalist-border bg-soviet-gray/20 space-y-2">
-            <div className="text-[10px] uppercase font-bold opacity-50">{t.trialRemaining}</div>
-            <div className={cn("text-xl font-display font-black italic", isTrialExpired ? "text-soviet-red" : "text-white")}>
-              {timeLeft.hours}{t.hours} {timeLeft.minutes}{t.minutes}
+          <div className="space-y-3">
+            <div className="p-3 brutalist-border bg-soviet-gray/20 space-y-2">
+              <div className="text-[10px] uppercase font-bold opacity-50">{t.trialRemaining}</div>
+              <div className={cn("text-xl font-display font-black italic", isTrialExpired ? "text-soviet-red" : "text-white")}>
+                {timeLeft.hours}{t.hours} {timeLeft.minutes}{t.minutes}
+              </div>
+            </div>
+            <div className="p-3 brutalist-border bg-soviet-red/10 border-soviet-red/30 space-y-1">
+              <div className="text-[10px] uppercase font-bold opacity-50">{t.analysesRemaining}</div>
+              <div className="text-xl font-display font-black italic text-soviet-red">
+                {FREE_LIMIT - freeAnalysesUsed} / {FREE_LIMIT}
+              </div>
             </div>
           </div>
         )}
@@ -952,6 +1050,17 @@ export default function App() {
                   <div className="flex-1 space-y-2">
                     <div className="text-sm font-display font-black uppercase italic text-soviet-red">Alerte Système</div>
                     <p className="text-xs font-mono font-bold leading-relaxed">{error}</p>
+                    
+                    {(error.includes('Clé') || error.includes('Key') || error.includes('IA')) && (
+                      <div className="pt-2">
+                        <button 
+                          onClick={handleSelectKey}
+                          className="text-[10px] bg-soviet-red text-white px-3 py-1 font-display font-black uppercase hover:bg-white hover:text-soviet-red transition-all inline-flex items-center gap-2 animate-bounce"
+                        >
+                          🛠️ RÉPARER LA CONNEXION IA
+                        </button>
+                      </div>
+                    )}
                     {error.includes('Domaines autorisés') && (
                       <div className="pt-2">
                         <a 
@@ -973,7 +1082,18 @@ export default function App() {
             </AnimatePresence>
 
             <AnimatePresence mode="wait">
-              {currentView === 'dashboard' && (
+              {!isAuthReady ? (
+                <motion.div 
+                  key="loading"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="flex flex-col items-center justify-center h-full space-y-4"
+                >
+                  <Loader2 className="animate-spin text-soviet-red" size={48} />
+                  <div className="font-mono text-xs uppercase tracking-[0.3em] animate-pulse">Initialisation du Système...</div>
+                </motion.div>
+              ) : currentView === 'dashboard' && (
                 <motion.div key="dashboard" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="max-w-5xl mx-auto space-y-12">
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
                     <div className="space-y-8">
@@ -986,6 +1106,27 @@ export default function App() {
                         <button onClick={() => setCurrentView('chapters')} className="soviet-button soviet-button-primary">{t.startStudy}</button>
                         <button onClick={() => setCurrentView('analysis')} className="soviet-button soviet-button-secondary">{t.analysisLab}</button>
                       </div>
+                      
+                      {!isSubscribed && !isAdmin && (
+                        <div className="pt-6 space-y-3">
+                          <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-widest opacity-60">
+                            <span>{t.analysesRemaining}</span>
+                            <span className="text-soviet-red font-black">
+                              {FREE_LIMIT - freeAnalysesUsed} / {FREE_LIMIT}
+                            </span>
+                          </div>
+                          <div className="h-2 w-full bg-soviet-gray brutalist-border overflow-hidden">
+                            <motion.div 
+                              initial={{ width: 0 }}
+                              animate={{ width: `${(freeAnalysesUsed / FREE_LIMIT) * 100}%` }}
+                              className="h-full bg-soviet-red" 
+                            />
+                          </div>
+                          <p className="text-[10px] italic opacity-40 uppercase tracking-tight">
+                            → {t.trialRemaining} {timeLeft.hours}{t.hours} {timeLeft.minutes}{t.minutes}
+                          </p>
+                        </div>
+                      )}
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                       {[
@@ -1055,24 +1196,46 @@ export default function App() {
                     </div>
                     <div className="p-3 brutalist-border bg-soviet-gray/20 flex flex-col gap-1">
                       <span className="text-[8px] uppercase font-bold opacity-50">IA Core</span>
-                      <span className={cn("text-xs font-bold", hasApiKey ? "text-green-500" : "text-soviet-red")}>
-                        {hasApiKey ? 'CONNECTÉ' : 'DÉCONNECTÉ'}
-                      </span>
+                      <div className="flex gap-2">
+                        <button 
+                          onClick={handleSelectKey}
+                          className={cn(
+                            "text-[10px] font-black underline uppercase", 
+                            hasApiKey ? "text-green-500" : "text-soviet-red animate-pulse"
+                          )}
+                        >
+                          {hasApiKey ? "CHANGER" : "RECONNECTER"}
+                        </button>
+                        <button 
+                          onClick={testApiKey}
+                          className="text-[10px] font-black underline uppercase text-soviet-blue"
+                        >
+                          TESTER
+                        </button>
+                      </div>
                     </div>
                     <div className="p-3 brutalist-border bg-soviet-gray/20 flex flex-col gap-1">
-                      <span className="text-[8px] uppercase font-bold opacity-50">Quota</span>
-                      <span className={cn("text-xs font-bold", quotaExceeded ? "text-soviet-red" : "text-green-500")}>
-                        {quotaExceeded ? 'LIMITE ATTEINTE' : 'OPTIMAL'}
+                      <span className="text-[8px] uppercase font-bold opacity-50">
+                        {isSubscribed || isAdmin ? 'Quota' : t.analysesRemaining}
+                      </span>
+                      <span className={cn("text-xs font-bold", (quotaExceeded || (!isSubscribed && !isAdmin && !hasFreeAnalyses)) ? "text-soviet-red" : "text-green-500")}>
+                        {isSubscribed || isAdmin 
+                          ? (quotaExceeded ? 'LIMITE ATTEINTE' : 'OPTIMAL')
+                          : `${FREE_LIMIT - freeAnalysesUsed} / ${FREE_LIMIT}`}
                       </span>
                     </div>
                   </div>
 
                   {!hasAccess ? (
                     <div className="flex flex-col items-center justify-center py-20 space-y-8 text-center">
-                      <Clock size={80} className="text-soviet-red animate-pulse" />
+                      <Lock size={80} className="text-soviet-red animate-pulse" />
                       <div className="space-y-4">
-                        <h2 className="text-5xl font-display font-black uppercase italic">{t.trialExpired}</h2>
-                        <p className="max-w-md mx-auto opacity-70">{t.trialExpiredDesc}</p>
+                        <h2 className="text-5xl font-display font-black uppercase italic">
+                          {!hasFreeAnalyses && !isSubscribed && !isAdmin ? t.trialLimitReached : t.trialExpired}
+                        </h2>
+                        <p className="max-w-md mx-auto opacity-70">
+                          {!hasFreeAnalyses && !isSubscribed && !isAdmin ? t.trialLimitReachedDesc : t.trialExpiredDesc}
+                        </p>
                       </div>
                       <button onClick={() => setCurrentView('subscription')} className="soviet-button soviet-button-primary px-12 py-4 text-xl">{t.subscribe}</button>
                     </div>
@@ -1269,6 +1432,46 @@ export default function App() {
                         )}
                       </div>
                     </>
+                  )}
+                </motion.div>
+              )}
+
+              {currentView === 'history' && (
+                <motion.div key="history" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="max-w-5xl mx-auto space-y-8">
+                  <div className="flex items-center gap-4 border-b-4 border-soviet-red pb-4">
+                    <History className="text-soviet-red" size={32} />
+                    <h3 className="text-4xl font-display font-black uppercase italic tracking-tighter">{t.historyTitle}</h3>
+                  </div>
+                  
+                  {history.length === 0 ? (
+                    <div className="p-12 brutalist-border bg-soviet-gray/30 text-center opacity-50 italic font-mono uppercase text-sm">
+                      {t.noHistory}
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      {[...history].reverse().map((entry) => (
+                        <div key={entry.id} className="soviet-card bg-soviet-gray/40 hover:bg-soviet-gray/60 transition-all group">
+                          <div className="flex justify-between items-start mb-4">
+                            <div className="space-y-1">
+                              <div className="text-[10px] font-mono text-soviet-red font-bold uppercase">{entry.date}</div>
+                              <div className="text-lg font-display font-black uppercase italic tracking-tight">{entry.targetBoxer}</div>
+                            </div>
+                            <button 
+                              onClick={() => {
+                                setAnalysisResult(entry.result);
+                                setCurrentView('analysis');
+                              }}
+                              className="text-[10px] font-mono uppercase bg-soviet-red text-white px-3 py-1 hover:bg-white hover:text-soviet-red transition-colors"
+                            >
+                              {lang === 'fr' ? "Voir Rapport" : lang === 'es' ? "Ver Informe" : "View Report"}
+                            </button>
+                          </div>
+                          <div className="text-xs opacity-80 line-clamp-3 font-sans leading-relaxed italic">
+                            {entry.result.substring(0, 200)}...
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   )}
                 </motion.div>
               )}
