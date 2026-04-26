@@ -161,22 +161,7 @@ export default function App() {
   useEffect(() => {
     const checkKey = async () => {
       const serverReady = await checkServerAi();
-      if (serverReady) {
-        setHasApiKey(true);
-        return;
-      }
-
-      try {
-        // Fallback to local platform check if server doesn't have it
-        if ((window as any).aistudio?.hasSelectedApiKey) {
-          const selected = await (window as any).aistudio.hasSelectedApiKey();
-          setHasApiKey(!!selected);
-        } else {
-          setHasApiKey(false);
-        }
-      } catch (e) {
-        setHasApiKey(false);
-      }
+      setHasApiKey(serverReady);
     };
     checkKey();
     
@@ -232,12 +217,13 @@ export default function App() {
       try {
         addLog("SYSTÈME: Ouverture du sélecteur de clé...");
         await (window as any).aistudio.openSelectKey();
-        const selected = await (window as any).aistudio.hasSelectedApiKey();
         const serverReady = await checkServerAi();
-        setHasApiKey(!!selected || serverReady);
-        if (selected || serverReady) {
+        setHasApiKey(serverReady);
+        if (serverReady) {
           setError(null);
-          addLog("SUCCÈS: IA Reconnectée.");
+          addLog("SUCCÈS: IA serveur reconnectée.");
+        } else {
+          setError("La clé sélectionnée dans AI Studio n'est pas encore disponible pour le serveur. Vérifiez les Secrets/variables serveur puis redéployez.");
         }
       } catch (e) {
         console.error("Error selecting key:", e);
