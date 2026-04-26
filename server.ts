@@ -16,6 +16,10 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  const getGeminiApiKey = () => {
+    return (process.env.GEMINI_API_KEY || process.env.API_KEY || "").trim();
+  };
+
   // Increase limit for video payloads
   app.use(express.json({ limit: '100mb' }));
   app.use(express.urlencoded({ limit: '100mb', extended: true }));
@@ -31,7 +35,7 @@ async function startServer() {
 
   // AI initialization
   const getAI = () => {
-    const key = process.env.GEMINI_API_KEY;
+    const key = getGeminiApiKey();
     if (!key) return null;
     return new GoogleGenerativeAI(key);
   };
@@ -40,7 +44,7 @@ async function startServer() {
   app.get("/api/health", (req, res) => {
     res.json({ 
       status: "ok", 
-      ai: !!process.env.GEMINI_API_KEY,
+      ai: !!getGeminiApiKey(),
       stripe: !!process.env.STRIPE_SECRET_KEY 
     });
   });
