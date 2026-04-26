@@ -37,7 +37,6 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { compressVideo } from './lib/videoCompression';
 import { CHAPTERS, Language } from './constants';
 import { TRANSLATIONS } from './translations';
@@ -147,28 +146,36 @@ export default function App() {
 
   const t = TRANSLATIONS[lang];
 
+  const checkServerAi = async (): Promise<boolean> => {
+    try {
+      const res = await fetch('/api/health');
+      if (!res.ok) return false;
+      const health = await res.json();
+      return !!health.ai;
+    } catch (e) {
+      return false;
+    }
+  };
+
   // Check for API Key
   useEffect(() => {
     const checkKey = async () => {
-      try {
-        // Check server health first
-        const res = await fetch('/api/health');
-        const health = await res.json();
-        
-        if (health.ai) {
-          setHasApiKey(true);
-          return;
-        }
+      const serverReady = await checkServerAi();
+      if (serverReady) {
+        setHasApiKey(true);
+        return;
+      }
 
+      try {
         // Fallback to local platform check if server doesn't have it
         if ((window as any).aistudio?.hasSelectedApiKey) {
           const selected = await (window as any).aistudio.hasSelectedApiKey();
-          setHasApiKey(selected || !!process.env.GEMINI_API_KEY);
+          setHasApiKey(!!selected);
         } else {
-          setHasApiKey(!!process.env.GEMINI_API_KEY);
+          setHasApiKey(false);
         }
       } catch (e) {
-        setHasApiKey(!!process.env.GEMINI_API_KEY);
+        setHasApiKey(false);
       }
     };
     checkKey();
@@ -180,19 +187,29 @@ export default function App() {
 
   const testApiKey = async () => {
     try {
-      addLog("TEST IA: Envoi d'un message court...");
-      const apiKey = getActiveApiKey();
-      if (!apiKey || apiKey === "undefined") {
-        throw new Error("Clé API non détectée.");
+      addLog("TEST IA: Vérification de la clé serveur...");
+      const serverReady = await checkServerAi();
+      if (!serverReady) {
+        throw new Error("Clé API serveur non détectée. Vérifiez GEMINI_API_KEY dans l'environnement serveur.");
       }
-      
-      const ai = new GoogleGenerativeAI(apiKey);
-      const model = ai.getGenerativeModel({
-        model: "gemini-1.5-flash",
+
+      addLog("TEST IA: Envoi d'un message court via le serveur...");
+      const resChat = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [{ role: 'user', text: "Dis 'Prêt' en français." }],
+          systemInstruction: "Réponds uniquement par un court message de confirmation en français."
+        })
       });
-      const result = await model.generateContent("Dis 'Prêt' en français.");
-      const response = await result.response;
-      const text = response.text();
+
+      if (!resChat.ok) {
+        const errorData = await resChat.json().catch(() => ({}));
+        throw new Error(errorData.error || "Le serveur IA n'a pas répondu correctement.");
+      }
+
+      const data = await resChat.json();
+      const text = data.text;
       
       if (text) {
         addLog(`TEST RÉUSSI: L'IA a répondu: "${text}"`);
@@ -216,8 +233,9 @@ export default function App() {
         addLog("SYSTÈME: Ouverture du sélecteur de clé...");
         await (window as any).aistudio.openSelectKey();
         const selected = await (window as any).aistudio.hasSelectedApiKey();
-        setHasApiKey(selected || !!process.env.GEMINI_API_KEY);
-        if (selected || process.env.GEMINI_API_KEY) {
+        const serverReady = await checkServerAi();
+        setHasApiKey(!!selected || serverReady);
+        if (selected || serverReady) {
           setError(null);
           addLog("SUCCÈS: IA Reconnectée.");
         }
@@ -225,7 +243,11 @@ export default function App() {
         console.error("Error selecting key:", e);
       }
     } else {
-      alert("Veuillez configurer GEMINI_API_KEY dans l'onglet 'Secrets' (⚙️) puis REPUBLIER l'application.");
+      const serverReady = await checkServerAi();
+      setHasApiKey(serverReady);
+      if (!serverReady) {
+        alert("Veuillez configurer GEMINI_API_KEY côté serveur puis redéployer l'application.");
+      }
     }
   };
 
@@ -527,21 +549,17 @@ export default function App() {
     });
   };
 
-  const getActiveApiKey = (): string => {
-    const key = process.env.GEMINI_API_KEY || "";
-    return key.trim();
-  };
-
   const runAnalysis = async () => {
     if (!hasAccess) { setCurrentView('subscription'); return; }
     if (!userVideoFile || !refVideoFile) { setError(t.errorVideos); return; }
 
-    const apiKey = getActiveApiKey();
-    if (!apiKey) {
-      setError("Clé API manquante ou invalide. Veuillez configurer votre clé dans 'Secrets' (⚙️) ou via le bouton 'TESTER' ci-dessous.");
+    const serverReady = await checkServerAi();
+    if (!serverReady) {
+      setError("Clé API IA serveur manquante ou invalide. Configurez GEMINI_API_KEY côté serveur puis redéployez l'application.");
       setHasApiKey(false);
       return;
     }
+    setHasApiKey(true);
 
     setIsAnalyzing(true);
     setError(null);
