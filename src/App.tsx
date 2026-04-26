@@ -583,51 +583,145 @@ export default function App() {
           .join('\n\n');
 
         const promptMap = {
-          fr: `Analyse technique comparative approfondie de boxe style soviétique. 
-                
+          fr: `Analyse technique comparative approfondie de boxe style soviétique.
+
                 CONTEXTE DE PROGRESSION (HISTORIQUE) :
                 ${historyContext || "Aucun historique disponible. C'est la première analyse."}
 
                 IMPORTANT : Le boxeur à analyser spécifiquement dans les vidéos est : "${targetBoxer || 'le boxeur principal'}".
-                
-                STRUCTURE DU RAPPORT :
-                1. POINTS FORTS : Commence impérativement par souligner les réussites techniques et les points positifs observés.
-                2. AXES D'AMÉLIORATION : Détaille ensuite les points techniques à corriger avec des explications tactiques.
-                3. RÉSUMÉ & OBJECTIF : Termine par une note encourageante et un objectif précis pour la prochaine séance.
 
-                Génère un rapport détaillé et rédigé en français.`,
+                OBJECTIF :
+                Compare la vidéo de l'élève à la vidéo de référence. Donne un diagnostic exploitable immédiatement par un boxeur qui veut progresser. Si un détail n'est pas clairement visible, dis-le franchement au lieu d'inventer.
+
+                FORMAT OBLIGATOIRE DU RAPPORT, EN FRANÇAIS CLAIR :
+                # Rapport d'analyse technique
+
+                ## Note globale : XX/100
+                - Donne une note réaliste entre 0 et 100.
+                - Justifie la note en 2 phrases maximum.
+                - La note doit prendre en compte : garde, équilibre, déplacements, distance, relâchement, coordination, timing, défense et ressemblance avec la référence.
+
+                ## Résumé express
+                Rédige 3 à 5 phrases simples : niveau actuel, qualité principale, priorité numéro 1.
+
+                ## 3 points forts
+                Donne exactement 3 points forts numérotés.
+                Pour chaque point :
+                - nom du point fort ;
+                - preuve observée dans la vidéo ;
+                - comment l'utiliser encore mieux.
+
+                ## 3 plus grosses erreurs à corriger
+                Donne exactement 3 erreurs prioritaires numérotées, de la plus urgente à la moins urgente.
+                Pour chaque erreur :
+                - problème observé ;
+                - conséquence en combat ;
+                - correction technique concrète ;
+                - exercice recommandé.
+
+                ## Plan d'entraînement personnalisé
+                Propose un plan simple sur 7 jours adapté aux erreurs observées.
+                Pour chaque jour : objectif, 2 à 3 exercices, durée conseillée, critère de réussite.
+
+                ## Objectif de la prochaine vidéo
+                Donne un seul objectif mesurable à filmer lors de la prochaine analyse.
+
+                CONTRAINTES DE STYLE :
+                - Réponds uniquement en français.
+                - Sois précis, direct, encourageant et facile à comprendre.
+                - Utilise du Markdown propre avec titres et listes.
+                - Ne dépasse pas 900 mots.
+                - Ne parle pas de limites techniques ou d'IA sauf si la vidéo est vraiment impossible à analyser.`,
           en: `In-depth comparative technical analysis of Soviet-style boxing.
-                
+
                 PROGRESSION CONTEXT (HISTORY):
                 ${historyContext || "No history available. This is the first analysis."}
 
                 IMPORTANT: The boxer to be specifically analyzed in the videos is: "${targetBoxer || 'the main boxer'}".
 
-                REPORT STRUCTURE:
-                1. STRENGTHS: You must start by highlighting the technical successes and positive points observed.
-                2. AREAS FOR IMPROVEMENT: Then detail the technical points to be corrected with tactical explanations.
-                3. SUMMARY & GOAL: End with an encouraging note and a specific goal for the next session.
-                
-                Generate a detailed, written report in English.`,
+                GOAL:
+                Compare the student's video with the reference video. Give a practical diagnosis that the boxer can use immediately. If a detail is not clearly visible, say so instead of inventing it.
+
+                MANDATORY REPORT FORMAT, IN CLEAR ENGLISH:
+                # Technical analysis report
+
+                ## Global score: XX/100
+                - Give a realistic score between 0 and 100.
+                - Justify the score in 2 sentences maximum.
+                - Consider guard, balance, footwork, distance, relaxation, coordination, timing, defense, and similarity to the reference.
+
+                ## Express summary
+                Write 3 to 5 simple sentences: current level, main quality, number 1 priority.
+
+                ## 3 strengths
+                Give exactly 3 numbered strengths.
+                For each strength: name it, cite visible evidence, explain how to use it better.
+
+                ## 3 biggest mistakes to fix
+                Give exactly 3 numbered priority mistakes, from most urgent to least urgent.
+                For each mistake: observed problem, combat consequence, concrete technical correction, recommended drill.
+
+                ## Personalized training plan
+                Propose a simple 7-day plan adapted to the observed mistakes.
+                For each day: objective, 2 to 3 drills, suggested duration, success criterion.
+
+                ## Next video objective
+                Give one measurable objective to film for the next analysis.
+
+                STYLE CONSTRAINTS:
+                - Answer only in English.
+                - Be precise, direct, encouraging, and easy to understand.
+                - Use clean Markdown with headings and lists.
+                - Stay under 900 words.
+                - Do not discuss AI or technical limitations unless the video is truly impossible to analyze.`,
           es: `Análisis técnico comparativo profundo de boxeo estilo soviético.
-                
+
                 CONTEXTO DE PROGRESIÓN (HISTORIAL):
                 ${historyContext || "No hay historial disponible. Este es el primer análisis."}
 
-                IMPORTANT: El boxeador a analizar específicamente en los videos es: "${targetBoxer || 'el boxeador principal'}".
+                IMPORTANTE: El boxeador a analizar específicamente en los videos es: "${targetBoxer || 'el boxeador principal'}".
 
-                ESTRUCTURA DEL INFORME:
-                1. PUNTOS FUERTES: Debes comenzar resaltando los éxitos técnicos y los puntos positivos observados.
-                2. EJES DE MEJORA: Luego detalla los puntos técnicos a corregir con explicaciones tácticas.
-                3. RESUMEN Y OBJETIVO: Termina con una nota alentadora y un objetivo específico para la próxima sesión.
-                
-                Genera un informe detallado y redactado en español.`
+                OBJETIVO:
+                Compara el video del alumno con el video de referencia. Da un diagnóstico práctico que el boxeador pueda usar inmediatamente. Si un detalle no se ve claramente, dilo en vez de inventarlo.
+
+                FORMATO OBLIGATORIO DEL INFORME, EN ESPAÑOL CLARO:
+                # Informe de análisis técnico
+
+                ## Nota global: XX/100
+                - Da una nota realista entre 0 y 100.
+                - Justifica la nota en 2 frases máximo.
+                - Considera guardia, equilibrio, desplazamientos, distancia, relajación, coordinación, timing, defensa y semejanza con la referencia.
+
+                ## Resumen express
+                Escribe 3 a 5 frases simples: nivel actual, principal cualidad, prioridad número 1.
+
+                ## 3 puntos fuertes
+                Da exactamente 3 puntos fuertes numerados.
+                Para cada punto: nombre, prueba visible, cómo usarlo mejor.
+
+                ## 3 errores más importantes a corregir
+                Da exactamente 3 errores prioritarios numerados, del más urgente al menos urgente.
+                Para cada error: problema observado, consecuencia en combate, corrección técnica concreta, ejercicio recomendado.
+
+                ## Plan de entrenamiento personalizado
+                Propón un plan simple de 7 días adaptado a los errores observados.
+                Para cada día: objetivo, 2 a 3 ejercicios, duración aconsejada, criterio de éxito.
+
+                ## Objetivo del próximo video
+                Da un solo objetivo medible para filmar en el próximo análisis.
+
+                RESTRICCIONES DE ESTILO:
+                - Responde solo en español.
+                - Sé preciso, directo, alentador y fácil de entender.
+                - Usa Markdown limpio con títulos y listas.
+                - No superes 900 palabras.
+                - No hables de IA o límites técnicos salvo si el video es realmente imposible de analizar.`
         };
 
         const systemInstructionMap = {
-          fr: "Tu es un expert en boxe de l'école soviétique. Ton rôle est de fournir une analyse technique extrêmement détaillée et rédigée. Tu dois adopter une approche de 'coaching constructif' : commence TOUJOURS par les points positifs pour encourager l'élève avant de passer aux critiques techniques. Explique les concepts physiques et tactiques derrière chaque observation. Utilise un ton professionnel, précis et encourageant.",
-          en: "You are an expert in Soviet school boxing. Your role is to provide an extremely detailed and written technical analysis. You must adopt a 'constructive coaching' approach: ALWAYS start with positive points to encourage the student before moving on to technical criticisms. Explain the physical and tactical concepts behind each observation. Use a professional, precise, and encouraging tone.",
-          es: "Eres un experto en boxeo de la escuela soviética. Tu papel es proporcionar un análisis técnico extremadamente detallado y redactado. Debes adoptar un enfoque de 'entrenamiento constructivo': comienza SIEMPRE con los puntos positivos para animar al alumno antes de pasar a las críticas técnicas. Explica los conceptos físicos y tácticos detrás de cada observación. Utiliza un tono profesional, preciso y alentador."
+          fr: "Tu es un coach expert en boxe de l'école soviétique et en analyse biomécanique vidéo. Tu dois fournir un rapport structuré, concret et actionnable. Respecte strictement le format demandé par l'utilisateur : note globale sur 100, exactement 3 points forts, exactement 3 erreurs prioritaires, plan d'entraînement personnalisé et objectif mesurable. Réponds en français clair, avec un ton professionnel, précis et encourageant.",
+          en: "You are an expert Soviet-school boxing coach and video biomechanics analyst. Provide a structured, concrete, actionable report. Strictly follow the requested format: global score out of 100, exactly 3 strengths, exactly 3 priority mistakes, personalized training plan, and measurable objective. Answer in clear English with a professional, precise, encouraging tone.",
+          es: "Eres un entrenador experto en boxeo de la escuela soviética y en análisis biomecánico por video. Proporciona un informe estructurado, concreto y accionable. Respeta estrictamente el formato pedido: nota global sobre 100, exactamente 3 puntos fuertes, exactamente 3 errores prioritarios, plan de entrenamiento personalizado y objetivo medible. Responde en español claro, con tono profesional, preciso y alentador."
         };
 
         addLog(`IA INITIALISATION: [Sur Serveur]`);
