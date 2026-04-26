@@ -190,7 +190,7 @@ export default function App() {
       addLog("TEST IA: Vérification de la clé serveur...");
       const serverReady = await checkServerAi();
       if (!serverReady) {
-        throw new Error("Clé IA serveur non détectée. Vérifiez OPENAI_API_KEY dans l'environnement serveur.");
+        throw new Error("Clé API serveur non détectée. Vérifiez GEMINI_API_KEY dans l'environnement serveur.");
       }
 
       addLog("TEST IA: Envoi d'un message court via le serveur...");
@@ -222,7 +222,7 @@ export default function App() {
       console.error("Test API Error:", err);
       const rawError = err.message || JSON.stringify(err);
       addLog(`TEST ÉCHOUÉ: ${rawError}`);
-      setError(`DÉTAIL ERREUR IA: ${rawError}`);
+      setError(`DÉTAIL ERREUR GOOGLE: ${rawError}`);
       setHasApiKey(false);
     }
   };
@@ -246,7 +246,7 @@ export default function App() {
       const serverReady = await checkServerAi();
       setHasApiKey(serverReady);
       if (!serverReady) {
-        alert("Veuillez configurer OPENAI_API_KEY côté serveur puis redéployer l'application.");
+        alert("Veuillez configurer GEMINI_API_KEY côté serveur puis redéployer l'application.");
       }
     }
   };
@@ -549,59 +549,13 @@ export default function App() {
     });
   };
 
-  const captureVideoFrames = async (file: File, frameCount = 4): Promise<string[]> => {
-    const video = document.createElement('video');
-    const objectUrl = URL.createObjectURL(file);
-
-    try {
-      video.src = objectUrl;
-      video.muted = true;
-      video.playsInline = true;
-      video.preload = 'metadata';
-
-      await new Promise<void>((resolve, reject) => {
-        video.onloadedmetadata = () => resolve();
-        video.onerror = () => reject(new Error("Impossible de lire les métadonnées de la vidéo."));
-      });
-
-      const canvas = document.createElement('canvas');
-      const maxWidth = 768;
-      const ratio = video.videoWidth ? Math.min(1, maxWidth / video.videoWidth) : 1;
-      canvas.width = Math.max(1, Math.round((video.videoWidth || maxWidth) * ratio));
-      canvas.height = Math.max(1, Math.round((video.videoHeight || 432) * ratio));
-      const context = canvas.getContext('2d');
-      if (!context) throw new Error("Impossible de préparer l'extraction d'images vidéo.");
-
-      const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 1;
-      const timestamps = Array.from({ length: frameCount }, (_, index) => {
-        const position = (index + 1) / (frameCount + 1);
-        return Math.min(Math.max(duration * position, 0), Math.max(duration - 0.1, 0));
-      });
-
-      const frames: string[] = [];
-      for (const timestamp of timestamps) {
-        await new Promise<void>((resolve, reject) => {
-          video.onseeked = () => resolve();
-          video.onerror = () => reject(new Error("Impossible d'extraire une image de la vidéo."));
-          video.currentTime = timestamp;
-        });
-        context.drawImage(video, 0, 0, canvas.width, canvas.height);
-        frames.push(canvas.toDataURL('image/jpeg', 0.78));
-      }
-
-      return frames;
-    } finally {
-      URL.revokeObjectURL(objectUrl);
-    }
-  };
-
   const runAnalysis = async () => {
     if (!hasAccess) { setCurrentView('subscription'); return; }
     if (!userVideoFile || !refVideoFile) { setError(t.errorVideos); return; }
 
     const serverReady = await checkServerAi();
     if (!serverReady) {
-      setError("Clé IA serveur manquante ou invalide. Configurez OPENAI_API_KEY côté serveur puis redéployez l'application.");
+      setError("Clé API IA serveur manquante ou invalide. Configurez GEMINI_API_KEY côté serveur puis redéployez l'application.");
       setHasApiKey(false);
       return;
     }
@@ -624,13 +578,12 @@ export default function App() {
 
     const performAnalysis = async () => {
       try {
-        addLog("EXTRACTION: Captures visuelles depuis les vidéos...");
-        const [userFrames, refFrames] = await Promise.all([
-          captureVideoFrames(userVideoFile),
-          captureVideoFrames(refVideoFile)
-        ]);
+        // Force the BEST model for EVERYONE to ensure maximum satisfaction and reliability
+        const modelName = "gemini-1.5-pro"; 
 
-        const totalPayloadSize = userFrames.join('').length + refFrames.join('').length;
+        const userVideoBase64 = await fileToBase64(userVideoFile);
+        const refVideoBase64 = await fileToBase64(refVideoFile);
+        const totalPayloadSize = userVideoBase64.length + refVideoBase64.length;
         
         // Higher production limits for Subscribed/Admin
         const sizeLimit = isSubscribed || isAdmin ? 200 * 1024 * 1024 : 60 * 1024 * 1024;
@@ -789,15 +742,16 @@ export default function App() {
           es: "Eres un entrenador experto en boxeo de la escuela soviética y en análisis biomecánico por video. Proporciona un informe estructurado, concreto y accionable. Respeta estrictamente el formato pedido: nota global sobre 100, exactamente 3 puntos fuertes, exactamente 3 errores prioritarios, plan de entrenamiento personalizado y objetivo medible. Responde en español claro, con tono profesional, preciso y alentador."
         };
 
-        addLog(`IA INITIALISATION: [Serveur OpenAI]`);
+        addLog(`IA INITIALISATION: [Sur Serveur]`);
         
         const resAnalyze = await fetch('/api/analyze', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            userFrames,
-            refFrames,
+            userVideo: userVideoBase64,
+            refVideo: refVideoBase64,
             prompt: promptMap[lang],
+            model: modelName,
             systemInstruction: systemInstructionMap[lang]
           })
         });
@@ -888,6 +842,7 @@ export default function App() {
     setIsAsking(true);
 
     try {
+      const modelName = isSubscribed || isAdmin ? "gemini-1.5-pro" : "gemini-1.5-flash";
       const systemInstruction = `Tu es un expert en boxe de l'école soviétique. Tu as accès à l'intégralité de l'historique de l'utilisateur. Analyse actuelle : "${analysisResult}". Réponds de manière technique, précise et encourageante. Ton but est de faire de cet utilisateur un maître du style soviétique (Pendulum, distance, relâchement).`;
 
       const resChat = await fetch('/api/chat', {
@@ -895,7 +850,8 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: [...chatMessages, { role: 'user', text: question }],
-          systemInstruction
+          systemInstruction,
+          model: modelName
         })
       });
 

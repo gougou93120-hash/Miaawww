@@ -4,6 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import Stripe from 'stripe';
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 dotenv.config({ path: ".env.local" });
 dotenv.config();
@@ -15,41 +16,8 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  const getAiApiKey = () => {
-    return (process.env.OPENAI_API_KEY || "").trim();
-  };
-
-  const getAiModel = () => {
-    return (process.env.OPENAI_MODEL || "gpt-4o").trim();
-  };
-
-  const callOpenAI = async (body: Record<string, unknown>) => {
-    const apiKey = getAiApiKey();
-    if (!apiKey) {
-      throw new Error("OPENAI_API_KEY manquante côté serveur.");
-    }
-
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const message = data?.error?.message || `Erreur OpenAI HTTP ${response.status}`;
-      throw new Error(message);
-    }
-
-    const text = data?.choices?.[0]?.message?.content;
-    if (!text || typeof text !== "string") {
-      throw new Error("Réponse IA vide ou invalide.");
-    }
-
-    return text;
+  const getGeminiApiKey = () => {
+    return (process.env.GEMINI_API_KEY || process.env.API_KEY || "").trim();
   };
 
   // Increase limit for video payloads
@@ -65,13 +33,18 @@ async function startServer() {
     return stripe;
   };
 
+  // AI initialization
+  const getAI = () => {
+    const key = getGeminiApiKey();
+    if (!key) return null;
+    return new GoogleGenerativeAI(key);
+  };
+
   // Health check
   app.get("/api/health", (req, res) => {
     res.json({ 
       status: "ok", 
-      ai: !!getAiApiKey(),
-      aiProvider: "openai",
-      aiModel: getAiModel(),
+      ai: !!getGeminiApiKey(),
       stripe: !!process.env.STRIPE_SECRET_KEY 
     });
   });
@@ -82,75 +55,105 @@ async function startServer() {
     console.log(`[ANALYSIS] Request from ${req.body.email} (Admin: ${isAdmin})`);
     
     try {
-      if (!getAiApiKey()) {
-        console.error("[ANALYSIS ERROR] OPENAI_API_KEY missing");
-        return res.status(500).json({ error: "Le serveur n'a pas de clé OpenAI configurée." });
+      const ai = getAI();
+      if (!ai) {
+        console.error("[ANALYSIS ERROR] GEMINI_API_KEY missing");
+        return res.status(500).json({ error: "Le serveur n'a pas de clé API IA configurée." });
       }
 
-      const { userFrames, refFrames, prompt, systemInstruction } = req.body;
+      const { userVideo, refVideo, prompt, model, systemInstruction } = req.body;
 
-      if (!Array.isArray(userFrames) || !Array.isArray(refFrames) || userFrames.length === 0 || refFrames.length === 0) {
-        return res.status(400).json({ error: "Images vidéo manquantes pour l'analyse." });
+      if (!userVideo || !refVideo) {
+        return res.status(400).json({ error: "Données vidéo manquantes." });
       }
 
-      const modelToUse = getAiModel();
-      console.log(`[ANALYSIS] Attempting OpenAI analysis with: ${modelToUse}`);
+      // Force high performance for everyone for maximum reliability
+      const modelToUse = "gemini-1.5-pro";
+      console.log(`[ANALYSIS] Attempting analysis with: ${modelToUse}`);
       
-      const imageContent = [
-        { type: "text", text: `${prompt}\n\nLes images suivantes sont des captures extraites de la vidéo de l'élève, puis de la vidéo de référence. Analyse la posture et la technique à partir de cette séquence visuelle.` },
-        { type: "text", text: "CAPTURES DE L'ELEVE :" },
-        ...userFrames.map((frame: string) => ({
-          type: "image_url",
-          image_url: { url: frame, detail: "high" },
-        })),
-        { type: "text", text: "CAPTURES DE LA REFERENCE :" },
-        ...refFrames.map((frame: string) => ({
-          type: "image_url",
-          image_url: { url: frame, detail: "high" },
-        })),
-      ];
+      try {
+        const generationModel = ai.getGenerativeModel({ 
+          model: modelToUse,
+          systemInstruction: systemInstruction 
+        });
 
-      const text = await callOpenAI({
-        model: modelToUse,
-        temperature: 0.35,
-        max_tokens: 1800,
-        messages: [
-          { role: "system", content: systemInstruction },
-          { role: "user", content: imageContent },
-        ],
-      });
+        const result = await generationModel.generateContent([
+          { text: prompt },
+          { inlineData: { mimeType: "video/webm", data: userVideo } },
+          { inlineData: { mimeType: "video/webm", data: refVideo } }
+        ]);
 
-      return res.json({ text });
+        const response = await result.response;
+        return res.json({ text: response.text() });
+      } catch (aiError: any) {
+        console.warn("[ANALYSIS] Pro model failed, falling back to Flash:", aiError.message);
+        // FALLBACK to FLASH if PRO fails (Redundancy)
+        const fallbackModel = ai.getGenerativeModel({ 
+          model: "gemini-1.5-flash",
+          systemInstruction: systemInstruction 
+        });
+        const result = await fallbackModel.generateContent([
+          { text: prompt },
+          { inlineData: { mimeType: "video/webm", data: userVideo } },
+          { inlineData: { mimeType: "video/webm", data: refVideo } }
+        ]);
+        const response = await result.response;
+        return res.json({ text: response.text() });
+      }
     } catch (error: any) {
       console.error("[ANALYSIS CRITICAL ERROR]:", error);
       res.status(500).json({ 
         error: "Échec de l'analyse IA.", 
         details: error.message,
-        suggestion: "Vérifiez que OPENAI_API_KEY est configurée côté serveur." 
+        suggestion: "Vérifiez que la clé API dans 'Secrets' est toujours valide." 
       });
     }
   });
 
   // AI Chat Endpoint
   app.post("/api/chat", async (req, res) => {
+    const isAdmin = req.body.email === 'gougou93120@gmail.com';
     try {
-      if (!getAiApiKey()) return res.status(500).json({ error: "Clé OpenAI non configurée." });
+      const ai = getAI();
+      if (!ai) return res.status(500).json({ error: "Clé API non configurée." });
 
       const { messages, systemInstruction } = req.body;
-      const text = await callOpenAI({
-        model: getAiModel(),
-        temperature: 0.45,
-        max_tokens: 900,
-        messages: [
-          { role: "system", content: systemInstruction },
-          ...messages.map((message: any) => ({
-            role: message.role === "user" ? "user" : "assistant",
-            content: message.text,
-          })),
-        ],
-      });
+      const modelToUse = "gemini-1.5-pro";
+      
+      try {
+        const generationModel = ai.getGenerativeModel({ 
+          model: modelToUse,
+          systemInstruction: systemInstruction 
+        });
 
-      return res.json({ text });
+        const chat = generationModel.startChat({
+          history: messages.slice(0, -1).map((m: any) => ({
+            role: m.role === 'user' ? 'user' : 'model',
+            parts: [{ text: m.text }]
+          }))
+        });
+
+        const lastMessage = messages[messages.length - 1].text;
+        const result = await chat.sendMessage(lastMessage);
+        const response = await result.response;
+        return res.json({ text: response.text() });
+      } catch (chatError: any) {
+        console.warn("[CHAT] Pro model failed, falling back to Flash:", chatError.message);
+        const fallbackModel = ai.getGenerativeModel({ 
+          model: "gemini-1.5-flash",
+          systemInstruction: systemInstruction 
+        });
+        const chat = fallbackModel.startChat({
+          history: messages.slice(0, -1).map((m: any) => ({
+            role: m.role === 'user' ? 'user' : 'model',
+            parts: [{ text: m.text }]
+          }))
+        });
+        const lastMessage = messages[messages.length - 1].text;
+        const result = await chat.sendMessage(lastMessage);
+        const response = await result.response;
+        return res.json({ text: response.text() });
+      }
     } catch (error: any) {
       console.error("[CHAT ERROR]:", error);
       res.status(500).json({ error: "Échec de la discussion IA.", details: error.message });
