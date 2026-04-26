@@ -6,8 +6,8 @@ import dotenv from "dotenv";
 import Stripe from 'stripe';
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-dotenv.config({ path: ".env.local" });
-dotenv.config();
+const localEnvResult = dotenv.config({ path: ".env.local" });
+const defaultEnvResult = dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,14 +15,26 @@ const __dirname = path.dirname(__filename);
 async function startServer() {
   const app = express();
   const PORT = 3000;
+  const JSON_PAYLOAD_LIMIT = '320mb';
 
   const getGeminiApiKey = () => {
     return (process.env.GEMINI_API_KEY || process.env.API_KEY || "").trim();
   };
 
+  const getAiKeyDiagnostics = () => ({
+    configured: !!getGeminiApiKey(),
+    checkedNames: ['GEMINI_API_KEY', 'API_KEY'],
+    sources: {
+      GEMINI_API_KEY: !!process.env.GEMINI_API_KEY,
+      API_KEY: !!process.env.API_KEY,
+      envLocalLoaded: !localEnvResult.error,
+      envLoaded: !defaultEnvResult.error,
+    }
+  });
+
   // Increase limit for video payloads
-  app.use(express.json({ limit: '100mb' }));
-  app.use(express.urlencoded({ limit: '100mb', extended: true }));
+  app.use(express.json({ limit: JSON_PAYLOAD_LIMIT }));
+  app.use(express.urlencoded({ limit: JSON_PAYLOAD_LIMIT, extended: true }));
 
   // Stripe initialization with lazy loading pattern
   let stripe: Stripe | null = null;
@@ -45,6 +57,8 @@ async function startServer() {
     res.json({ 
       status: "ok", 
       ai: !!getGeminiApiKey(),
+      aiKey: getAiKeyDiagnostics(),
+      payloadLimit: JSON_PAYLOAD_LIMIT,
       stripe: !!process.env.STRIPE_SECRET_KEY 
     });
   });

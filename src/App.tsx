@@ -585,14 +585,15 @@ export default function App() {
         const refVideoBase64 = await fileToBase64(refVideoFile);
         const totalPayloadSize = userVideoBase64.length + refVideoBase64.length;
         
-        // Higher production limits for Subscribed/Admin
-        const sizeLimit = isSubscribed || isAdmin ? 200 * 1024 * 1024 : 60 * 1024 * 1024;
+        // Base64 is ~33% larger than the original file, so these payload
+        // limits are intentionally higher than the visible video file sizes.
+        const sizeLimit = isSubscribed || isAdmin ? 300 * 1024 * 1024 : 120 * 1024 * 1024;
         
         if (totalPayloadSize > sizeLimit) {
           addLog("ERREUR: Payload trop lourd");
           throw new Error(lang === 'fr' 
-            ? `Le total des vidéos (${(totalPayloadSize / 1024 / 1024).toFixed(1)}MB) dépasse la limite de ${isSubscribed || isAdmin ? '100MB' : '60MB'}.` 
-            : `Total video size (${(totalPayloadSize / 1024 / 1024).toFixed(1)}MB) exceeds the ${isSubscribed || isAdmin ? '100MB' : '60MB'} limit.`);
+            ? `Le total encodé des vidéos (${(totalPayloadSize / 1024 / 1024).toFixed(1)}MB) dépasse la limite de ${isSubscribed || isAdmin ? '300MB' : '120MB'}. Compressez en 720p ou raccourcissez légèrement la référence.` 
+            : `Encoded video total (${(totalPayloadSize / 1024 / 1024).toFixed(1)}MB) exceeds the ${isSubscribed || isAdmin ? '300MB' : '120MB'} limit. Compress to 720p or shorten the reference slightly.`);
         }
 
         const historyContext = history
@@ -1761,10 +1762,10 @@ export default function App() {
                     <h4 className="font-display font-bold uppercase text-soviet-red">3. {lang === 'fr' ? "Durée" : lang === 'es' ? "Duración" : "Duration"}</h4>
                     <p className="text-sm leading-relaxed">
                       {lang === 'fr' 
-                        ? "Visez des séquences de 15 à 60 secondes. C'est parfait pour une analyse complète." 
+                        ? "Les vidéos de plus d'une minute sont acceptées si elles restent légères. Idéal : 60 à 120 secondes en 720p, avec compression automatique au chargement." 
                         : lang === 'es' 
-                        ? "Apunta a secuencias de 15 a 60 segundos. Es perfecto para un análisis completo." 
-                        : "Aim for sequences of 15 to 60 seconds. It's perfect for a complete analysis."}
+                        ? "Se aceptan videos de más de un minuto si siguen siendo ligeros. Ideal: 60 a 120 segundos en 720p, con compresión automática al cargar." 
+                        : "Videos longer than one minute are accepted if they stay lightweight. Ideal: 60 to 120 seconds in 720p, with automatic compression on upload."}
                     </p>
                   </div>
                   <div className="space-y-2">
