@@ -2,8 +2,12 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
+import dotenv from "dotenv";
 import Stripe from 'stripe';
 import { GoogleGenerativeAI } from "@google/generative-ai";
+
+dotenv.config({ path: ".env.local" });
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
