@@ -2,8 +2,12 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
+import dotenv from "dotenv";
 import Stripe from 'stripe';
 import { GoogleGenerativeAI } from "@google/generative-ai";
+
+const localEnvResult = dotenv.config({ path: ".env.local" });
+const defaultEnvResult = dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -11,10 +15,65 @@ const __dirname = path.dirname(__filename);
 async function startServer() {
   const app = express();
   const PORT = 3000;
+  const JSON_PAYLOAD_LIMIT = '320mb';
+  const AI_KEY_ENV_NAMES = [
+    'GEMINI_API_KEY',
+    'API_KEY',
+    'GOOGLE_API_KEY',
+    'GOOGLE_GENERATIVE_AI_API_KEY',
+  ];
+  const PLACEHOLDER_VALUES = [
+    'MY_GEMINI_API_KEY',
+    'MY_API_KEY',
+    'YOUR_API_KEY',
+    'TA_CLE',
+    'TA_VRAIE_CLE',
+  ];
+
+  const normalizeApiKey = (value: string | undefined) => {
+    return (value || "").trim().replace(/^['"]|['"]$/g, "");
+  };
+
+  const isPlaceholderKey = (value: string) => {
+    const normalized = value.trim().toUpperCase();
+    return PLACEHOLDER_VALUES.some(placeholder => normalized.includes(placeholder));
+  };
+
+  const getGeminiApiKey = () => {
+    for (const name of AI_KEY_ENV_NAMES) {
+      const value = normalizeApiKey(process.env[name]);
+      if (value && !isPlaceholderKey(value)) return value;
+    }
+    return "";
+  };
+
+  const getAiKeyDiagnostics = () => {
+    const detectedName = AI_KEY_ENV_NAMES.find(name => {
+      const value = normalizeApiKey(process.env[name]);
+      return value && !isPlaceholderKey(value);
+    });
+
+    return {
+      configured: !!detectedName,
+      detectedName: detectedName || null,
+      checkedNames: AI_KEY_ENV_NAMES,
+      sources: {
+        ...Object.fromEntries(AI_KEY_ENV_NAMES.map(name => {
+          const value = normalizeApiKey(process.env[name]);
+          return [name, {
+            present: !!value,
+            placeholder: !!value && isPlaceholderKey(value),
+          }];
+        })),
+      envLocalLoaded: !localEnvResult.error,
+      envLoaded: !defaultEnvResult.error,
+      }
+    };
+  };
 
   // Increase limit for video payloads
-  app.use(express.json({ limit: '100mb' }));
-  app.use(express.urlencoded({ limit: '100mb', extended: true }));
+  app.use(express.json({ limit: JSON_PAYLOAD_LIMIT }));
+  app.use(express.urlencoded({ limit: JSON_PAYLOAD_LIMIT, extended: true }));
 
   // Stripe initialization with lazy loading pattern
   let stripe: Stripe | null = null;
@@ -27,7 +86,7 @@ async function startServer() {
 
   // AI initialization
   const getAI = () => {
-    const key = process.env.GEMINI_API_KEY;
+    const key = getGeminiApiKey();
     if (!key) return null;
     return new GoogleGenerativeAI(key);
   };
@@ -36,10 +95,27 @@ async function startServer() {
   app.get("/api/health", (req, res) => {
     res.json({ 
       status: "ok", 
-      ai: !!process.env.GEMINI_API_KEY,
+      ai: !!getGeminiApiKey(),
+      aiKey: getAiKeyDiagnostics(),
+      payloadLimit: JSON_PAYLOAD_LIMIT,
       stripe: !!process.env.STRIPE_SECRET_KEY 
     });
   });
+
+  const sendAiDiagnostics = (res: express.Response) => {
+    const diagnostics = getAiKeyDiagnostics();
+    res.json({
+      ok: diagnostics.configured,
+      provider: "google-gemini",
+      message: diagnostics.configured
+        ? "La clé IA est détectée côté serveur. Si l'analyse échoue encore, la clé peut être invalide, limitée, ou le modèle vidéo peut refuser la charge utile."
+        : "Aucune clé IA valide n'est détectée côté serveur. Ajoutez GEMINI_API_KEY, API_KEY, GOOGLE_API_KEY ou GOOGLE_GENERATIVE_AI_API_KEY dans les variables d'environnement du serveur, puis redéployez.",
+      diagnostics,
+    });
+  };
+
+  app.get("/api/diagnostics/ai", (req, res) => sendAiDiagnostics(res));
+  app.get("/api/diagnostics/ai-key", (req, res) => sendAiDiagnostics(res));
 
   // AI Analysis Endpoint
   app.post("/api/analyze", async (req, res) => {

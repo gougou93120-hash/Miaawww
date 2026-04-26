@@ -44,12 +44,12 @@ export async function compressVideo(
       canvas.width = width;
       canvas.height = height;
 
-      const stream = canvas.captureStream(30); // 30 FPS
+      const stream = canvas.captureStream(24); // 24 FPS is enough for AI review and keeps longer videos lighter.
       const mimeType = 'video/webm;codecs=vp8';
       
       const mediaRecorder = new MediaRecorder(stream, {
         mimeType: MediaRecorder.isTypeSupported(mimeType) ? mimeType : 'video/webm',
-        videoBitsPerSecond: 1000000 // 1Mbps - Good for AI
+        videoBitsPerSecond: 750000 // Keeps 60-120s clips practical without losing the key movement cues.
       });
 
       const chunks: Blob[] = [];
@@ -89,11 +89,8 @@ export async function compressVideo(
 
       video.onplay = () => renderFrame();
       
-      // We need to play the video to trigger the capture
-      // For large files, we can seek instead of real-time play for speed, 
-      // but MediaRecorder expects real-time stream from canvas.
-      // So we set playbackRate high if supported
-      video.playbackRate = 4.0; 
+      // Keep normal playback speed so the compressed output preserves real timing.
+      video.playbackRate = 1.0;
       video.play().catch(reject);
     };
 
